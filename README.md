@@ -1,13 +1,10 @@
 ![](https://admin.startingblocks.org/assets/starting-blocks-1ceab864.svg)
 
-[![Release](https://img.shields.io/github/v/release/auth0/terraform-provider-auth0?logo=terraform&include_prereleases&style=flat-square)](https://github.com/edanalytics/startingblocks_oss/releases)
-
-
-Welcome to the StartingBlocks Open Source repository. The artifacts stored here will allow users to deploy a cloud native Ed-Fi ODS/API implementation using AWS resources. StartingBlocks is additionally inclusive of a suite of management functions that allow users to manage resources to configure their Ed-Fi deployment appropraitely.
+Welcome to the StartingBlocks Open Source repository! The artifacts in this repository will allow users to deploy a cloud native Ed-Fi ODS/API implementation using AWS resources. StartingBlocks is additionally inclusive of a suite of management functions that allow users to manage resources to configure their Ed-Fi deployment appropraitely for a variety of use cases.
 
 [Deployment Steps](./docs/sbe-deployment-steps.md)
 
-[Management Functions Usage](./docs/sbe-mgmt-functions.md)
+[Management and Reporting Functions Usage](./docs/sbe-functions.md)
 
 # Overall Architecture
 Below is a high level architecture diagram and inventory of <i>some</i> AWS resources deployed when using these templates. It's important to note, that once these resources are deployed, users are immediately responsible for any incurred costs, even if the environment is not being used. Please also note that there are some pre-requisite resources that are included in this diagram for informational purposes. Specifically, public subnets, VPC and private subnets must already exist prior to deploying StartingBlocks. For deployment steps [please click here](./docs/sbe-deployment-steps.md)
@@ -24,7 +21,7 @@ Currently we do not support deployments of the Ed-Fi Admin App for StartingBlock
 ---
 
 # Lambda Functions
-The diagram highlights that there is a suite of AWS Lambda functions used in StartingBlocks. There are Ed-Fi environment management functions, but there are also general helper functions or functions created as custom CloudFormation resources. Below is a complete inventory of Lambda functions deployed with StartingBlocks. There is also more detail specifically on the environment management functions [in our docs folder here.](./docs/sbe-mgmt-functions.md) All Lambda functions deployed by CloudFormation are prefixed by the `EnvLabel` parameter value to make them easy to find in the Lambda console. This is a living document, so users should expect to see this change over time.
+The diagram highlights that there is a suite of AWS Lambda functions used in StartingBlocks. There are Ed-Fi environment management functions, but there are also general helper functions or functions created as custom CloudFormation resources. Below is a complete inventory of Lambda functions deployed with StartingBlocks. There is also more detail specifically on the environment management functions [in our docs folder here.](./docs/sbe-functions.md) All Lambda functions deployed by CloudFormation are prefixed by the `EnvLabel` parameter value to make them easy to find in the Lambda console. This is a living document, so users should expect to see this change over time.
 
 - <b>DbRestore - </b> Restores template databases on initial StartingBlocks deployments.
 - <b>EncryptionKeyGenerator - </b> CloudFormation Custom Resource provider.  Creates and stores a base64 encoded 256-bit key.
@@ -40,4 +37,3 @@ The diagram highlights that there is a suite of AWS Lambda functions used in Sta
 - <b>ODSDerivatives - </b> CloudFormation Custom Resource provider. Adds/removes ODS instance derivative in admin db when ODS instance derivative is created/deleted.
 - <b>ODSUserPermissions - </b> Grants permissions to users in the ODS managed by database groups.
 - <b>API-Publisher-getmaxchangeversion - </b> Optionally deployed if publisher is also deployed. Lambda Function to replace the getmaxchangeversion ODS function.
-- <b>
