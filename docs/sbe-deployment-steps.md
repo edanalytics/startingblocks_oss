@@ -20,8 +20,6 @@ Steps to deploy StartingBlocks templates.
 7.  Enter stack parameter values. [Please read the doc here for more information on parameter values.](sbe-parameter-values.md)
 8.  Navigate through the various screens until you are able to start the deployment.
 
-For more information on next steps after infrastructure is deployed, [read the document here about environment management.](./sbe-environment-management.md)
-
 ## StartingBlocks Environment Configuration
 
 After infrastructure is deployed, there is some environment configuration that will need to happen before the Ed-Fi API/ODS is ready for usage. Below are some high level steps that administrators can take to ensure the environment is configured correctly. All management functions are meant to be called per `Tenant`, as such it might be a good idea to create tooling and scripts as wrappers to interact with the management functions. e.g. If your environment has multiple tenants, scripting the invocation of the AWS Lambda functions to happen in a loop might be helpful to expedite configuration.
