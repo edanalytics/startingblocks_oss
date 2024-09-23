@@ -4,7 +4,7 @@ There are a large amount of parameter values needed in order to deploy a properl
 ## Parameters
 -   <b>Stack name - </b> Name your stack something unique and related to your environment.
 -   <b>EnvLabel - </b> Unique name for your environment. Generally will align with the `Stack name` and be included in your S3 source bucket name.
--   <b>S3SourceBucket - </b> The name of the S3 bucket in which StartingBlocks templates are sourced. This is the bucket you created in <b>Step 1</b>
+-   <b>S3SourceBucket - </b> The name of the S3 bucket in which StartingBlocks templates are sourced. This is the bucket you created in [Step 1](sbe-deployment-steps.md#deployment-steps) of the deployment steps.
 -   <b>HostedZoneId - </b> The route 53 Hosted Zone that was created as a prerequisite to deploying StaritingBlocks.
 -   <b>DomainName - </b> Fully qualified domain name to create wild card certificate for.  StartingBlocks uses a wildcard certificate in order to better track api clients in logs.
 -   <b>Partner - </b> The StartingBlocks product team uses this parameter to keep track of partner deployments. It is used to generate unique resource names for deployed resources.
