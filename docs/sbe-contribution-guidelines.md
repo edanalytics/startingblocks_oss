@@ -17,8 +17,6 @@ Security releases, documentation updates, and updates to the Ed-Fi application b
 
 ---
 
-We will generally look to make releases once a month if there are new additions to the codebase, whether feature additions, or bug fixes.
-
 If you'd like to recieve up to date notifications for updates you can change your `watch` settings on the repository.
 ![](./imgs/watch_screenshot.png).
 
