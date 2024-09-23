@@ -461,6 +461,115 @@ Example output:
 
 <details>
     <summary><b>ODSUserPermissions</b></summary>
+
+This function was created to assist admins in creating ODS users without needing to completely work within the DB instance.  There are some steps admins must take in the DB instance, but this function generally has 2 sets of responsibilities:
+
+1. Grant/Revoke read only permissions to specified groups on target databases and schemas.
+2. Add/Remove users from groups.
+
+Please note that currently this function only adds <b>read only</b> permissions to a given group. If administrators would like to create groups with more permissive actions, they must follow PostGres instructions on creating groups and granting appropriate access. Admins will still be able to use this function to add and remove users from groups.
+
+## Variable requirements
+
+**Action**
+
+Choice between `GrantPermissions` and `RevokePermissions` for group related actions. `AddUsers` and `RemoveUsers` for user related actions.
+
+**GroupName**
+
+Name of group to add/remove permissions to/from. Also used to add/remove users to/from.
+
+**DatabaseList**
+
+For group related actions. This database list will be used to grant/revoke group level permissions.
+
+**SchemaList**
+
+For group related actions. This schema list will be used to grant/revoke group level permissions.
+
+**UserList**
+
+For user related actions. List of users to add or remove from given group.
+
+## Actions:
+
+### Adding/Revoking Permissions to/from groups
+
+### Prerequisites
+1. Create an appropriate group in the DB instance.
+
+`CREATE GROUP {prefix}_readonlygroup`
+
+<b>To Add Permissions to a Group</b>
+
+Invoke the `ODSUserPermissions` lambda function through the AWS console or aws-cli to add the appropriate permissions to the group. The function takes a group name and a list of databases and schemas. It will provide read only access to each schema in each database. The function assumes the provided group, databases, and schemas already exist. An example JSON payload is below.
+
+Example Input:
+
+    {
+    "Action": "GrantPermissions",
+    "GroupName": "test_readonlygroup",
+    "DatabaseList": ["ods_tenant1_dev", "ods_tenant1_prod"],
+    "SchemaList": ["edfi", "tpdm"]
+    }
+
+<b>To Remove Permissions from a Group</b>
+
+Invoke the `ODSUserPermissions` lambda function through the AWS console or aws-cli to revoke permissions from the group. The function takes a group name and a list of databases and schemas. It will revoke read only access from each schema in each database. The function assumes the provided group, databases, and schemas already exist. An example JSON payload is below.
+
+Example Input:
+
+    {
+      "Action": "RevokePermissions",
+      "GroupName": "test_readonlygroup",
+      "DatabaseList": [
+        "ods_tenant1_dev",
+        "ods_tenant1_prod"
+      ],
+      "SchemaList": [
+        "edfi",
+        "tpdm"
+      ]
+    }
+
+
+### Adding/Removing users to/from groups
+
+### Prerequisites
+1. Create user in the Database.
+
+`CREATE USER {username} WITH PASSWORD {password}`
+
+<b>To Add Users to Group</b>
+
+Invoke the `ODSUserPermissions` lambda function through the AWS console or aws-cli to add the user(s) to the appropriate group. The function takes a group name and a list of usernames, and it will add each user to the group. The function assumes the provided group and users already exist. An example JSON payload is below.
+
+Example Input:
+
+    {
+      "Action": "AddUsers",
+      "UserList": [
+        "user_1",
+        "user_2"
+      ],
+      "GroupName": "test_readonlygroup"
+    }
+
+<b>To Remove Users from Group</b>
+
+Invoke the `{envLabel}-ODSUserPermissions` lambda function through the AWS console or aws-cli to remove the user(s) from the appropriate group. The function takes a group name and a list of usernames, and it will remove each user from the group. The function assumes the provided group and users already exist. An example JSON payload is below.
+
+Example Input:
+
+    {
+      "Action": "RemoveUsers",
+      "UserList": [
+        "user_1",
+        "user_2"
+      ],
+      "GroupName": "test_readonlygroup"
+    }
+
 </details>
 
 
@@ -469,9 +578,123 @@ There are currently 2 reporting type functions to allow for visibility into the 
 
 <details>
     <summary><b>TenantResourceTree</b></summary>
+
+This function will return a JSON representation of resource hierarchy for a given `Tenant`. This can be helpful in identifying ownership of resources oriented around tenants in the environment.
+
+## Variable requirements
+
+**tenant**
+
+Tenant name to return resource tree for.
+
+Example Input:
+
+    {
+    "tenant": "exampletenantname"
+    }
+
+Example Output:
+
+    {
+    "odss": [
+        {
+        "id": 1,
+        "name": "prod",
+        "dbname": "ods_emtest_prod",
+        "allowedEdOrgs": [],
+        "edorgs": [
+            {
+            "educationorganizationid": "255950",
+            "nameofinstitution": "Region 99 Education Service Center",
+            "shortnameofinstitution": null,
+            "discriminator": "edfi.EducationServiceCenter",
+            "id": "5c72407b-1d2b-4ade-85f0-f9fb91b6f244",
+            "edorgs": [
+                {
+                "educationorganizationid": "255901",
+                "nameofinstitution": "Grand Bend ISD",
+                "shortnameofinstitution": "GBISD",
+                "discriminator": "edfi.LocalEducationAgency",
+                "id": "e7977d80-c1d7-4d5a-a575-4cf23f4d09f3",
+                "edorgs": [
+                    {
+                    "educationorganizationid": "255901107",
+                    "nameofinstitution": "Grand Bend Elementary School",
+                    "shortnameofinstitution": "GBES",
+                    "discriminator": "edfi.School",
+                    "id": "c93b2405-d834-4933-9e98-eac8bbcd1967"
+                    },
+                    {
+                    "educationorganizationid": "255901044",
+                    "nameofinstitution": "Grand Bend Middle School",
+                    "shortnameofinstitution": "GBMS",
+                    "discriminator": "edfi.School",
+                    "id": "47626af1-5aa1-479f-a173-6c6b7fc19210"
+                    },
+                    {
+                    "educationorganizationid": "255901001",
+                    "nameofinstitution": "Grand Bend High School",
+                    "shortnameofinstitution": "GBHS",
+                    "discriminator": "edfi.School",
+                    "id": "6b9c82ab-bc13-4875-9868-e5c015478ddd"
+                    }
+                ]
+                }
+            ]
+            },
+            {
+            "educationorganizationid": "5",
+            "nameofinstitution": "UT Austin College of Education Graduate",
+            "shortnameofinstitution": null,
+            "discriminator": "edfi.School",
+            "id": "f33cb20d-e90a-4763-b886-2a201c67ae0e"
+            },
+            {
+            "educationorganizationid": "6",
+            "nameofinstitution": "UT Austin College of Education Under Graduate",
+            "shortnameofinstitution": null,
+            "discriminator": "edfi.School",
+            "id": "225b6e19-4be5-4808-b0b6-fabe724ad894"
+            },
+            {
+            "educationorganizationid": "7",
+            "nameofinstitution": "UT Austin Extended Campus",
+            "shortnameofinstitution": null,
+            "discriminator": "edfi.School",
+            "id": "ac402f08-222c-49f2-80e0-36ae92270534"
+            }
+        ]
+        }
+    ]
+    }
+
 </details>
 
 <details>
     <summary><b>DataFreshnessJson</b></summary>
+
+Provides a JSON output for resource counts and dates per table within a given `ODS` and `Tenant`. This provides some visibility into the ODS without needing to make API calls or connect directly to the DB instance.
+
+## Variable requirements
+
+**Tenant**
+
+Name of tenant to return rowcounts for.
+
+**ODS**
+
+Name of ODS within tenant to return rowcounts for.
+
+Example Input:
+
+    {
+    "Tenant": "exampletenantname",
+    "ODS": "prod"
+    }
+
+Example Output:
+
+    "[{\"Schema\": \"edfi\", \"Table\": \"academicweek\", \"RecordCount\": 0, \"FirstCreated\": null, \"LastCreated\": null, \"LastUpdated\": null}, {\"Schema\": \"edfi\", \"Table\": \"accountabilityrating\", \"RecordCount\": 4, \"FirstCreated\": \"2023-12-06T18:46:11.227767\", \"LastCreated\": \"2023-12-06T18:46:11.227781\", \"LastUpdated\": \"2023-12-06T18:46:11.226569\"}, {\"Schema\": \"edfi\", \"Table\": \"assessment\", \"RecordCount\": 24, \"FirstCreated\": \"2023-12-06T18:46:56.248244\", \"LastCreated\": \"2023-12-06T18:46:56.532913\", \"LastUpdated\": \"2023-12-06T18:46:56.532625\"}, {\"Schema\": \"edfi\", \"Table\": \"assessmentacademicsubject\", \"RecordCount\": 30, \"FirstCreated\": \"2023-12-06T18:46:56.251721\", \"LastCreated\": \"2023-12-06T18:46:56.533883\", \"LastUpdated\": null}, {\"Schema\": \"edfi\", \"Table\": \"assessmentassessedgradelevel\", \"RecordCount\": 27, \"FirstCreated\": \"2023-12-06T18:46:56.252883\", \"LastCreated\": \"2023-12-06T18:46:56.534305\", \"LastUpdated\": null},...
+
 </details>
 
