@@ -1,4 +1,4 @@
-# StartringBlocks Deployment
+# StartingBlocks Deployment
 
 ## Prerequisites
 1.  You must have an AWS account
