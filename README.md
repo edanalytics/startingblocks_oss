@@ -21,19 +21,22 @@ Currently we do not support deployments of the Ed-Fi Admin App for StartingBlock
 ---
 
 # Lambda Functions
-The diagram highlights that there is a suite of AWS Lambda functions used in StartingBlocks. There are Ed-Fi environment management functions, but there are also general helper functions or functions created as custom CloudFormation resources. Below is a complete inventory of Lambda functions deployed with StartingBlocks. There is also more detail specifically on the environment management functions [in our docs folder here.](./docs/sbe-functions.md) All Lambda functions deployed by CloudFormation are prefixed by the `EnvLabel` parameter value to make them easy to find in the Lambda console.
+The diagram highlights that there is a suite of AWS Lambda functions used in StartingBlocks. There are Ed-Fi environment management functions, but there are also general utility functions or functions created as custom CloudFormation resources. Below is a complete inventory of Lambda functions deployed with StartingBlocks. There is also more detail specifically on the environment management functions [in our docs folder here.](./docs/sbe-functions.md) All Lambda functions deployed by CloudFormation are prefixed by the `EnvLabel` parameter value to make them easy to find in the Lambda console.
 
+## Utility Functions
 - <b>DbRestore - </b> Restores template databases on initial StartingBlocks deployments.
-- <b>EncryptionKeyGenerator - </b> CloudFormation Custom Resource provider.  Creates and stores a base64 encoded 256-bit key.
 - <b>EdFiBeanstalkSNSToSlack - </b> Forwards SNS messages sent from Beanstalk Env and RDS instance to Slack.
-- <b>TenantManagement - </b> Used to manage Tenants in Ed-Fi 7.x environments.
+- <b>East1Alarm - </b> Creates a Route53 Healthcheck Alarm in us-east-1.
+- <b>API-Publisher-getmaxchangeversion - </b> Optionally deployed if publisher is also deployed. Lambda Function to replace the getmaxchangeversion ODS function.
+## Custom CloudFormation Resource Functions
+- <b>EncryptionKeyGenerator - </b> CloudFormation Custom Resource provider.  Creates and stores a base64 encoded 256-bit key.
 - <b>SetCloudWatchRetention - </b> CloudFormation Custom Resource provider.  Sets retention on CloudWatch Log Groups.
+- <b>ODSDerivatives - </b> CloudFormation Custom Resource provider. Adds/removes ODS instance derivative in admin db when ODS instance derivative is created/deleted.
+## Management and Reporting Functions
+- <b>TenantManagement - </b> Used to manage Tenants in Ed-Fi 7.x environments.
 - <b>ODSManagement - </b> Used to manage ODSs in Ed-Fi 7.x environments.
 - <b>EdOrgManagement - </b> Used to managed Education Organizations in Ed-Fi 7.x environments.
 - <b>SbeMetadata - </b> Optionally Deployed if SBAA admin interface is chosen. Provides ARNs for all Lambda Ed-Fi resource management functions.
 - <b>TenantResourceTree - </b> Provides tree structure of resources in a tenant.
 - <b>DataFreshnessJson - </b> Provides a JSON output for resource counts and dates per table within a given ODS and Tenant.
-- <b>East1Alarm - </b> Creates a Route53 Healthcheck Alarm in us-east-1.
-- <b>ODSDerivatives - </b> CloudFormation Custom Resource provider. Adds/removes ODS instance derivative in admin db when ODS instance derivative is created/deleted.
 - <b>ODSUserPermissions - </b> Grants permissions to users in the ODS managed by database groups.
-- <b>API-Publisher-getmaxchangeversion - </b> Optionally deployed if publisher is also deployed. Lambda Function to replace the getmaxchangeversion ODS function.
