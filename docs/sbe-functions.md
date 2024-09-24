@@ -1,5 +1,5 @@
 # StartingBlocks Management Functions
-We have worked with Ed-Fi for some time to manage and administer environments with a large number of tenants. As such, we have created a set of management functions that we deploy alongside the Ed-Fi API/ODS that allow for ease of environment configuration. These functions are deployed as AWS Lambda Function resources during StartingBlocks delpoyment.  We will dive into each of these functions individually and explain what they do, why they were created, and how to interface with them.
+The StartingBlocks product team has created a set of management functions that are deployed alongside the Ed-Fi API/ODS that allow for ease of environment configuration. These functions are deployed as AWS Lambda Function resources during StartingBlocks delpoyment.  Please expand each section below to see more details about each function.
 
 <details>
     <summary><b>TenantManagement</b></summary>
@@ -86,7 +86,7 @@ Example output:
 
 ### List
 
-This action will list all of the current tenants that exist in the DynamoDB table. A list inside this table means that the Admin and Security databases will also exist in the SQL environment.
+This action will list all of the current tenants that exist in the StartingBlocks environment. If a tenant exists in this table it means that an Admin and Security database exist in the database instance.
 
 Example input:
 
@@ -118,7 +118,7 @@ Example output:
 
 ### Update
 
-This action first validates that the Tenant exists. If it does then it allows the user to update the AllowedEdOrgs column in the DynamoDB table.
+This action provides a means to update AllowedEdOrgs on existing tenants.
 
 Example input:
 
@@ -141,7 +141,7 @@ Example output:
 
 ### Reload
 
-This action will regenerate the appsettings.json for the given environment when ran. This causes all api servers to recognize the current list of tenants.
+This action will regenerate the appsettings.json for the StartingBlocks environment. This causes all api servers to recognize the current list of tenants.
 
 Example input:
 
@@ -162,8 +162,6 @@ This action generates the keys for use with the AdminAPI.  The generated keys ha
 **NOTE:**
 
 The DisplayName is being used as a unique key.  When this action is called with a unique DisplaName, new Admin API creds will be created and stored.  When this function is called with an existing DisplayName, AdminAPI creds with the same name will be replaced.
-
-Previously this function returned the AdminAPI secret base 64 encoded.  It now returns the secret string directly and will follow json escaping rules.  Json clients in any programming language will handle this correctly.
 
 ---
 
@@ -220,6 +218,14 @@ Tenant names should include only numbers and lowercase letters, be a single word
 **ODSName**
 
 ODS names should include only numbers and lowercase letters, be a single word, and have a max length of 29. Technically it should conform to ^([a-z,0-9]){1,29}$
+
+---
+
+**NOTE:**
+
+In StartingBlocks, there is a particular naming convention for the database names. Example: `ods_{TenantName}_{ODSName}`. Note that the `ODSName` is in fact the suffix of the whole database name and <b>does not</b> refer to the whole string name.
+
+---
 
 **TemplateName**
 
@@ -357,7 +363,15 @@ Tenant names should include only numbers and lowercase letters, be a single word
 
 **ODSName**
 
-This is the name of the ODS which will follow the tenant in the naming standard for StartingBlocks environments. Example: `ods_{TenantName}_{ODSname}`
+The name for the ODS to create or remove EdOrg records from. ODS names should include only numbers and lowercase letters, be a single word, and have a max length of 29. Technically it should conform to ^([a-z,0-9]){1,29}$
+
+---
+
+**NOTE:**
+
+In StartingBlocks, there is a particular naming convention for the database names. Example: `ods_{TenantName}_{ODSName}`. Note that the `ODSName` is in fact the suffix of the whole database name and <b>does not</b> refer to the whole string name.
+
+---
 
 **EdOrgId**
 
@@ -467,13 +481,13 @@ This function was created to assist admins in creating ODS users without needing
 1. Grant/Revoke read only permissions to specified groups on target databases and schemas.
 2. Add/Remove users from groups.
 
-Please note that currently this function only adds <b>read only</b> permissions to a given group. If administrators would like to create groups with more permissive actions, they must follow PostGres instructions on creating groups and granting appropriate access. Admins will still be able to use this function to add and remove users from groups.
+Please note that currently this function only adds <b>read only</b> permissions to a given group. If administrators would like to create groups with more permissive actions, they must follow Postgres instructions on creating groups and granting appropriate access. Admins will still be able to use this function to add and remove users from groups.
 
 ## Variable requirements
 
 **Action**
 
-Choice between `GrantPermissions` and `RevokePermissions` for group related actions. `AddUsers` and `RemoveUsers` for user related actions.
+Choose between `GrantPermissions` and `RevokePermissions` for group related actions. `AddUsers` and `RemoveUsers` for user related actions.
 
 **GroupName**
 

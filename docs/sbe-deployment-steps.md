@@ -12,7 +12,8 @@ Steps to deploy StartingBlocks templates.
 
 1.  In your AWS account, create an S3 bucket that will be used to hold the StartingBlocks templates. The StartingBlocks team generally creates a new S3 bucket per environment deployed to ensure that we have some type of version control between environments if different Ed-Fi API/ODS versions are used year over year. S3 bucket names must be globally unique, i.e. you cannot have the same S3 bucket names in 2 different AWS accounts.
     - An example bucket name - `{orgname}-{environment label}-{version}-cloudformation` - `EducationAnalytics-Prod2425-7.1-cloudformation`
-2.  Checkout the relevant version of StartingBlocks from the OSS GitHub repository and pull it to your local machine.
+2.  Clone the StartingBlocks OSS repository to your local work machine and checkout the relevant version branch.
+    - StartingBlocks versioning aligns with versioning as its published by the Ed-Fi Alliance. e.g. StartingBlocksv7.1 deploys Ed-Fi APIv7.1
 3.  Upload the contents of the repository to your S3 bucket location. You can do this via AWS CLI or dragging the folders from your file explorer to the S3 console for your bucket.
 4.  Copy the S3 URL for the `templates > 1-StartingBlocks-Main-Template.yml` file.
 5.  Navigate to the CloudFormation service in AWS. Create a new stack with new resources.

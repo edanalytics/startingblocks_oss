@@ -1,5 +1,5 @@
 # StartingBlocks Deployment Parameters
-There are a large amount of parameter values needed in order to deploy a properly configured StartingBlocks environment. Some are self-explanatory and others might need additional description or guidance.  Below is a living list of parameters with some additional context. Users can expect descriptions, values, and parameters to change over time as the maintainers make improvements and accomodations to the codebase.
+There are a large amount of parameter values needed in order to deploy a properly configured StartingBlocks environment. Some are self-explanatory and others might need additional description or guidance.  Below is a list of parameters with some additional context. Users can expect descriptions, values, and parameters to change over time as the maintainers make improvements and accomodations to the codebase.
 
 ## Parameters
 -   <b>Stack name - </b> Name your stack something unique and related to your environment.
@@ -25,8 +25,7 @@ Each database artifact in the `database` folder is prefixed with which database 
 -   <b>DatabaseData - </b>  Minimal or Populated. Minimal deploys an ODS with only the Ed-Fi default descriptors and nothing else. Populated deploys an ODS with the Grand Bend test data set. Minimal is what should be used for production deployments.
 -   <b>DataStandardVersion - </b> There are 2 options for 7.1 `DS5` or `DS4`. This parameter will inform which default artifacts are deployed by StartingBlocks.
 -   <b>APIPublisher - </b> If users intend for the environment to be used for publishing with the API publisher, set this to `true` else `false`.
--   <b>AdminInterface - </b> Users of StartingBlocks OSS will set this to `Ed-Fi Admin Api` or `Ed-Fi Admin App` depending on whether or not a UI is needed for environment administration. `Ed-Fi Admin App` will deploy the stock admin application provided by the Ed-Fi Alliance.
--   <b>AdminAppCIDR - </b> CIDR or list of CIDRs to allow access to deployed Admin App. Currently commented out for 7.1 as there is no current release of the Admin App for Ed-Fi v7.x.
+-   <b>AdminInterface - </b> Users of StartingBlocks OSS will set this to `Ed-Fi Admin Api` or `None`.
 -   <b>AdminApiCIDRs - </b> List of CIDRs to allow access to call Admin API. It's advisable to add the CIDR for a user's office or locations where administration of the environment will need to be acccessible.
 -   <b>AdminAccountIds - </b> StartingBlocks utilizes many management functions deployed as AWS Lambda functions. If users would like to reach these functions from another AWS account, users can input their AWS account IDs here. This will allow the management Lambda functions to be called cross account.
 -   <b>WebAPIMinInstances - </b> The minimum number of EC2 instances managed by the Auto Scaling Group.
