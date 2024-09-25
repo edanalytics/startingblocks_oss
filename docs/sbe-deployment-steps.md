@@ -5,7 +5,7 @@
 2.  You must have deployed a custom VPC, 2 public subnets, and 2 private subnets before deploying the StartingBlocks templates. <b>It is not advisable for users to use the default VPC initially deployed by AWS</b>.
 3.  You must have created a Hosted Zone and NS record for the domain at which you intend to deploy your StartingBlocks environment(s).
 
-If you would like more guidance and support with deploying StartingBlocks, [please reach out to our team using this portal.](https://edanalytics.freshdesk.com/support/home)
+If you would like more guidance and support with deploying StartingBlocks, [please reach out to our team using this form.](https://support.startingblocks.org/)
 
 ## Deployment Steps
 Steps to deploy StartingBlocks templates.
