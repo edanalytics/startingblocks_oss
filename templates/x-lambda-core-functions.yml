@@ -1,0 +1,3598 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::LanguageExtensions'
+Description: >-
+  Deploys Lambda Functions used as Custom Resources and environment management.
+Parameters:
+  EnvLabel:
+    Default: ''
+    Description: Provide a label for your environment to identify resources easier.
+    Type: String
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the private subnet 1 in Availability Zone 1 (e.g., subnet-a0246dcd)
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the private subnet 2 in Availability Zone 2 (e.g., subnet-a0246dcd)
+  LambdaRestoreSGID:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID to use with the Lambda Function for Database Restore
+      operations (e.g., sg-7f16e910).
+  LambdaDefaultSGID:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID to use with the Lambda Functions by default.'
+  SlackWebhookUrl:
+    Type: String
+    Description: The URL of the Slack webhook to send notifications to (optional).
+  S3BucketSourceCode:
+    Type: String
+    Default: edfi-aws-quick-deploy
+    Description: This provides the name of the S3 bucket where the Lambda source code
+      resides.
+  S3KeySourceCode:
+    Type: String
+    Default: lambdas
+    Description: This provides the folder name inside the S3 bucket where the Lambda
+      source code resides.
+  RDSSecret:
+    Type: String
+  Partner:
+    Type: String
+    Description: Select partner for which Starting Blocks environment will be deployed.
+    Default: 'ea'
+  WebAPIMaxPoolSize:
+    Type: Number
+    Description: Maximun pool size for connections to the Ed-Fi ODS database
+  WebAPIConnectionIdleLifetime:
+    Type: Number
+    Description: Connection idle lifetime for connections to the Ed-Fi ODS database
+  AdminInterface:
+    Description: The interface that will provide management functions for this environment.
+    Type: String
+    Default: "Ed-Fi Admin API"
+    AllowedValues:
+      - "Ed-Fi Admin API"
+      - "None"
+  AdminAccountIds:
+    Description: When using StartingBlocks Admin App, these (comma separated) AWS Account ID's will be given permission to invoke the management Lambda Functions.
+    Type: CommaDelimitedList
+  EdFiTenancyMode:
+    Description: The tenancy mode that Ed-Fi will run in.
+    AllowedValues:
+      - 'SingleTenant'
+      - 'MultiTenant'
+    Default: 'SingleTenant'
+    Type: String
+  DomainName:
+    Description: The fully qualified domain name to be used for this ODS
+      API environment. (e.g. edfi.domain.com)  MUST be part of the Route53 Hosted Zone.
+    Type: String
+  DeployReplica:
+    Description: Deploy Read Replica.
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+  APIPublisher:
+    Description: Deploy resources for API Publisher.
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+  SNSTopicArn:
+    Description: ARN of SNS topic to publish Route53 HealthCheck Alarms
+    Type: String
+    
+Conditions:
+  UseAdminApi: !Equals [!Ref 'AdminInterface', "Ed-Fi Admin API"]
+  EnableHealthCheck:
+    !Not [!Equals [!Ref SNSTopicArn, '']]
+  UsePublisher: !Equals [!Ref APIPublisher, 'true']
+  EnableSlackNotifications: !Not [!Equals [!Ref SlackWebhookUrl, '']]
+
+Resources:
+
+  CRHelperLambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.11
+      Content:
+        S3Bucket: !Ref 'S3BucketSourceCode'
+        S3Key: !Sub '${S3KeySourceCode}/crhelper-lambda-layer-python3-11.zip'
+      Description: AWS CloudFormation helper lambda layer
+      LayerName: !Sub '${EnvLabel}-CRHelper-python3-11'
+  
+  PostgresClientLambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.11
+      Content:
+        S3Bucket: !Ref 'S3BucketSourceCode'
+        S3Key: !Sub '${S3KeySourceCode}/psql-12.7-AL2-LambdaLayer.zip'
+      Description: Postgres client for Amazon Linux 2
+      LayerName: !Sub '${EnvLabel}-psql-12-7-AL2'
+  PsycopgLambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.11
+      Content:
+        S3Bucket: !Ref 'S3BucketSourceCode'
+        S3Key: !Sub '${S3KeySourceCode}/psycopg2-311.zip'
+      Description: psycopg for python 3.11
+      LayerName: !Sub '${EnvLabel}-psycopg2-311'
+
+  PycryptodomeLambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.11
+      Content:
+        S3Bucket: !Ref 'S3BucketSourceCode'
+        S3Key: !Sub '${S3KeySourceCode}/pycryptodome-311.zip'
+      Description: pycryptodome for python 3.11
+      LayerName: !Sub '${EnvLabel}-pycryptodome-311'
+
+  PgPlimitLambdaLayer:
+    Condition: UseAdminApi
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - nodejs18.x
+      Content:
+        S3Bucket: !Ref 'S3BucketSourceCode'
+        S3Key: !Sub '${S3KeySourceCode}/nodejs18-pg-plimit.zip'
+      Description: pg and p-limit for node 18
+      LayerName: !Sub '${EnvLabel}-pg-plimit-node18'
+
+  DatabaseRestoreRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${EnvLabel}-edfi-ods-lambda-db-restore-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketSourceCode}'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3BucketSourceCode}/*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
+                  - !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+              - Effect: Allow
+                Action: ssm:DescribeParameters
+                Resource: '*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: '*'
+
+  DatabaseRestoreLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Layers:
+        - !Ref 'PostgresClientLambdaLayer'
+        - !Ref 'CRHelperLambdaLayer'
+      Description: CloudFormation Custom Resource provider.  Restores Postgres databases from S3 to RDS
+      FunctionName: !Sub '${EnvLabel}-DbRestore'
+      Role: !GetAtt 'DatabaseRestoreRole.Arn'
+      ReservedConcurrentExecutions: 3
+      Runtime: python3.11
+      Timeout: 900
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          PGPASSFILE: /tmp/.pgpass
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import boto3
+          import signal
+          import traceback
+          import subprocess
+          from crhelper import CfnResource
+
+          helper = CfnResource()
+
+          def lambda_handler(event,context):
+              signal.alarm(int((context.get_remaining_time_in_millis() / 1000) - 1))
+              helper(event, context)
+                  
+          @helper.create
+          def create(event, _): 
+
+              bucket      = event['ResourceProperties']['Bucket']
+              bucket_key  = event['ResourceProperties']['BucketKey']
+              database    = event['ResourceProperties']['Database']
+              template    = event['ResourceProperties']['Template']
+              secret_arn  = event['ResourceProperties']['SecretArn']
+              secret      = get_secret_from_secrets_manager(secret_arn)
+              host        = secret['host']
+              username    = secret['username']
+              password    = secret['password']
+              
+              ## Download SQL file from S3
+              download_s3_file_to_client_local_directory(bucket, bucket_key, "/tmp/import_file.sql")
+            
+              print('SQL file downloaded')
+
+              ## Set the .pgpass values and perms that we will use to connect to a database 
+              with open("/tmp/.pgpass", "w") as f:
+                  f.write(f'*:*:*:{username}:{password}')
+              subprocess.call("chmod 600 /tmp/.pgpass", shell=True)
+
+              ## Create the Database in PostgreSQL
+              db_create_query = f"echo \"SELECT 'CREATE DATABASE {database}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{database}')\gexec\" | /opt/bin/psql -U {username} -h {host} -w"
+              print('Creating database: ' + db_create_query)
+              psql_query = subprocess.check_output(db_create_query, shell=True)
+              print('Create database command successfully executed')
+              
+              ## Import database
+              import_query = f"/opt/bin/psql -U {username} -h {host} -w -d {database} < /tmp/import_file.sql"
+              print('Importing database file: ' + import_query)
+              psql_query = subprocess.check_output(import_query, shell=True)
+              print('Import completed.  If an ERROR message above is shown for the pcrypto extension, this can be safely ignored.')
+
+              ## Set as template 
+              if template.lower() == 'true':
+                  set_template_query = f"/opt/bin/psql -U {username} -h {host} -w -c \'ALTER DATABASE \"{database}\" WITH ALLOW_CONNECTIONS FALSE \'\;"
+                  print('Setting database ALLOW_CONNECTION FALSE')
+                  psql_query = subprocess.check_output(set_template_query, shell=True)
+                  print('Database altered')
+              else:
+                  print('Not altering database connection flag')
+              
+          def download_s3_file_to_client_local_directory(bucket_name,key,filename):
+
+              try:
+                  s3 = boto3.client('s3')
+                  print("Downloading file s3://" + bucket_name + "/" + key)
+                  s3.download_file(bucket_name,key,filename)
+                  return
+
+              except:
+                  print("Something went wrong when downloading the schema file from s3://" + bucket_name + "/" + key)
+                  traceback.print_exc()
+                  exit(1)
+
+          def get_secret_from_secrets_manager(secret_arn):
+              '''Get the secret from Secrets Manager'''
+              client = boto3.client('secretsmanager')
+              get_secret_value_response = client.get_secret_value(SecretId=secret_arn)
+              return json.loads(get_secret_value_response['SecretString'])
+                
+          @helper.update
+          @helper.delete
+          def no_op(_, __):
+              pass
+            
+          def timeout_handler(_signal, _frame):
+              '''Handle SIGALRM'''
+              raise Exception('Time exceeded')
+
+          signal.signal(signal.SIGALRM, timeout_handler)  
+  DatabaseRestoreLambdaVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'DatabaseRestoreLambdaFunction'
+  DatabaseRestoreRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${DatabaseRestoreLambdaFunction}'
+      retentionInDays: 365
+
+  EncryptionKeyGeneratorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - arn:aws:iam::aws:policy/SecretsManagerReadWrite
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+  EncryptionKeyGeneratorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Layers:
+        - !Ref 'CRHelperLambdaLayer'
+      Description: CloudFormation Custom Resource provider.  Creates and stores a base64 encoded 256-bit key
+      FunctionName: !Sub '${EnvLabel}-EncryptionKeyGenerator'
+      Role: !GetAtt 'EncryptionKeyGeneratorRole.Arn'
+      ReservedConcurrentExecutions: 1
+      Runtime: python3.11
+      Timeout: 30
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaDefaultSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Code:
+        ZipFile: |
+          import base64
+          import secrets
+          import boto3
+          import signal
+          import json
+          from crhelper import CfnResource
+
+          helper = CfnResource()
+
+          def lambda_handler(event, context):
+              signal.alarm(int((context.get_remaining_time_in_millis() / 1000) - 1))
+              helper(event, context)
+
+
+          @helper.create
+          def create(event, _):
+              client = boto3.client('secretsmanager')
+              name = event['ResourceProperties']['SecretName']
+
+              secret_exists = check_for_secret(name)
+
+              if not secret_exists:
+                  print("The secret named " + name + " did not exist...creating it now.")
+                  token = secrets.token_bytes(32)
+                  b64_token = base64.b64encode(token).decode('utf-8')
+
+                  response = client.create_secret(
+                      Name=name,
+                      Description='A 256-bit encryption key',
+                      SecretString=b64_token
+                  )
+
+                  print("This secret was successfully created during the deployment and named " + name)
+              else:
+                  print("The secret named " + name + " ALREADY EXISTED in the AWS account and therefore the deployment DID NOT create a secret with this name.")
+
+
+          def check_for_secret(secret_name):
+              sm             = boto3.client('secretsmanager')
+              response        = sm.list_secrets(
+                  Filters=[
+                      {
+                          'Key': 'name',
+                          'Values': [
+                              secret_name
+                          ]
+                      }
+                  ]
+              )
+
+              found = False
+
+              for key in response['SecretList']:
+                  if key['Name'] == secret_name:
+                      found = True
+
+              return found
+
+
+          @helper.update
+          def no_op(_, __):
+              pass
+
+
+          @helper.delete
+          def delete(event, _):
+              client = boto3.client('secretsmanager')
+              name = event['ResourceProperties']['SecretName']
+              
+              secret_exists = check_for_secret(name)
+              
+              if secret_exists:
+                  print(f'Secret {name} was found. Deleting.')
+                  client = boto3.client('secretsmanager')
+                  response = client.delete_secret(
+                      SecretId=name,
+                      ForceDeleteWithoutRecovery=True
+                  )
+                  print(f'Secret {name} was deleted without recovery.')
+              else:
+                  print(f'Secret {name} was not found.')
+                  
+
+          def timeout_handler(_signal, _frame):
+              '''Handle SIGALRM'''
+              raise Exception('lambda function timeout exceeded')
+
+
+          signal.signal(signal.SIGALRM, timeout_handler)
+  EncryptionKeyGeneratorVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'EncryptionKeyGeneratorFunction'
+  EncryptionKeyGeneratorRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${EncryptionKeyGeneratorFunction}'
+      retentionInDays: 365
+
+  AdminApiSecretResource:
+    Condition: UseAdminApi
+    DependsOn: EncryptionKeyGeneratorVersion
+    Type: Custom::AdminApiSecret
+    Properties:
+      ServiceToken: !GetAtt 'EncryptionKeyGeneratorFunction.Arn'
+      SecretName: !Sub '${EnvLabel}-AdminApiSecret'
+  WebApiSecretResource:
+    DependsOn: EncryptionKeyGeneratorVersion
+    Type: Custom::WebApiSecret
+    Properties:
+      ServiceToken: !GetAtt 'EncryptionKeyGeneratorFunction.Arn'
+      SecretName: !Sub '${EnvLabel}-WebApiSecret'
+
+  SNSToSlackFunction:
+    Condition: EnableSlackNotifications
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Role: !GetAtt 'SNSToSlackRole.Arn'
+      ReservedConcurrentExecutions: 2
+      Handler: index.lambda_handler
+      Description: Forwards SNS messages sent from Beanstalk Env to Slack.
+      FunctionName: !Sub '${EnvLabel}-EdFiBeanstalkSNSToSlack'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaDefaultSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          partner: !Ref Partner
+          webhookurl: !Ref SlackWebhookUrl
+      Code:
+        ZipFile: |
+          import urllib3
+          import json
+          import re
+          import os
+          import boto3
+
+          http = urllib3.PoolManager()
+
+
+          def lambda_handler(event, context):
+              url = os.environ["webhookurl"]
+              service = "unknown"
+              sns_message = event["Records"][0]["Sns"]["Message"]
+              message = sns_message
+              color = "default"
+              print(type(sns_message))
+              if type(sns_message) is dict:
+                  print("Type is dict")
+                  try:
+                      service = sns_message["Service"]
+                  except:
+                      print("Service Unknown")
+
+                  if service == "AWS Auto Scaling":
+                      print(f"Service: {service}")
+                      print(f"AutoScalingGroupName: {sns_message['AutoScalingGroupName']}")
+                      client = boto3.client("autoscaling")
+                      response = client.describe_tags(
+                          Filters=[
+                              {
+                                  "Name": "auto-scaling-group",
+                                  "Values": [
+                                      sns_message["AutoScalingGroupName"],
+                                  ],
+                              },
+                          ],
+                          MaxRecords=100,
+                      )
+                      print(f"len: {len(response['Tags'])}")
+                      for tag in response["Tags"]:
+                          if tag["Key"] == "Environment":
+                              asg_environment = tag["Value"]
+                          if tag["Key"] == "EdFiApplication":
+                              asg_edfiapplication = tag["Value"]
+                      matches = re.findall("[0-9]+\sto\s[0-9]+", sns_message["Cause"])
+                      message = (
+                          f"{asg_environment} {asg_edfiapplication} has scaled from {matches[0]}."
+                      )
+
+              if type(sns_message) is str:
+                  print("Type is string")
+
+                  # For Events from db-instance where message in event payload is JSON string
+                  try:
+                      event_message = json.loads(sns_message)
+                  except json.JSONDecodeError:
+                      event_message = ''
+                      
+                  if (
+                      "Source ID" in event_message
+                      and "databasestack" in event_message["Source ID"]
+                  ):
+                      event_source = event_message["Event Source"]
+                      resource_message = event_message["Event Message"]
+                      source_id = event_message["Source ID"]
+                      envlabel = event_message["Tags"]["EnvLabel"]
+                      message = f"EnvLabel: {envlabel}\nEventSource: {event_source}\nSourceId: {source_id}\nEventMessage: {resource_message}"
+                      print(message)
+                  elif "AlarmName" in event_message:
+                      color = "danger" if event_message["NewStateValue"] == "ALARM" else "good"
+                      print(color)
+                      message = f"AlarmName: {event_message['AlarmName']}\nAlarmDescription: {event_message['AlarmDescription']}\nNewState: {event_message['NewStateValue']}"
+                  else:
+                      message = ""
+                      message_line = ""
+                      app_name = ""
+                      filtered_message = ""
+                      for line in sns_message.splitlines():
+                          if "NotificationProcessId:" in line:
+                              continue
+                          if "Environment URL:" in line:
+                              continue
+                          if "Timestamp:" in line:
+                              continue
+                          if "Environment:" in line:
+                              continue
+                          if "Message:" in line:
+                              if "to Ok" in line:
+                                  color = "good"
+                              if "to Unknown" in line:
+                                  color = "warning"
+                              if "to Info" in line:
+                                  color = "warning"
+                              if "to Degraded" in line:
+                                  color = "danger"
+                              if "to Warning" in line:
+                                  color = "danger"
+                              if "to Severe" in line:
+                                  color = "danger"
+                              message_line = line
+                          if "Application:" in line:
+                              m = re.match(r"^Application: (?P<name>.*)", line)
+                              match = m.groupdict()
+                              app_name = match["name"] + "-" + os.environ["partner"]
+                              print(app_name)
+                              continue
+                          filtered_message = filtered_message + "\n" + line
+
+                      if message_line and app_name:
+                          message = message_line.replace("Message:", f"{app_name}:")
+                      else:
+                          message = filtered_message
+
+              msg = {"attachments": [{"text": message, "color": color}]}
+
+              encoded_msg = json.dumps(msg).encode("utf-8")
+              resp = http.request("POST", url, body=encoded_msg)
+              print(
+                  {
+                      "event_Records_0_Sns_Message": event["Records"][0]["Sns"]["Message"],
+                      "message": message,
+                      "status_code": resp.status,
+                      "response": resp.data,
+                  }
+              )
+
+  SNSToSlackRole:
+    Condition: EnableSlackNotifications
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvLabel}-SNS-to-Slack-Role'
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+  SNSToSlackInvokePermission:
+    Condition: EnableSlackNotifications
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref 'SNSToSlackFunction'
+      Principal: sns.amazonaws.com
+  SNSToSlackRetention:
+    Condition: EnableSlackNotifications
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${SNSToSlackFunction}'
+      retentionInDays: 365
+      
+  TenantManagementRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${EnvLabel}-lambda-tenant-management'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:CreateTags
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource: 
+                  - 'arn:aws:ssm:*::document/AWS-RunShellScript'
+              - Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:aws:ec2:*:${AWS::AccountId}:instance/*'
+                Condition:
+                  StringEquals:
+                    "aws:ResourceTag/Environment": !Ref EnvLabel
+  TenantManagementFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Role: !GetAtt 'TenantManagementRole.Arn'
+      Layers:
+        - !Ref 'PsycopgLambdaLayer'
+      Timeout: 30
+      ReservedConcurrentExecutions: 1
+      Handler: index.lambda_handler
+      Description: Manages Tenants in Ed-Fi 7+.
+      FunctionName: !Sub '${EnvLabel}-TenantManagement'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          ENVLABEL: !Ref EnvLabel
+          TENANCY_MODE: !Ref EdFiTenancyMode
+      Code:
+        ZipFile: |
+          import json
+          import psycopg2
+          import os
+          import re
+          import boto3
+          import base64
+          import secrets
+          import string
+          import uuid
+          from hashlib import pbkdf2_hmac
+          from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+          from decimal import Decimal
+
+          # Function to add an item to DynamoDB
+          def add_item(dynamodb_table, tenant_name, allowed_ed_orgs = None):
+              # Insert the data into the DynamoDB table
+            
+              item = {
+                  'Name': tenant_name
+              }
+            
+              if allowed_ed_orgs is not None:
+                  allowed_ed_orgs = map(int,allowed_ed_orgs)
+                  item['AllowedEdOrgs'] = set(allowed_ed_orgs)
+                
+              response = dynamodb_table.put_item(
+                  Item=item
+              )
+              return response
+
+          # Function to remove an item from DynamoDB
+          def remove_item(dynamodb_table, tenant_name):
+              # Delete the item from the DynamoDB table
+              response = dynamodb_table.delete_item(
+                  Key={
+                      'Name': tenant_name
+                  }
+              )
+              return response
+            
+          def update_item(dynamodb_table, tenant_name, allowed_ed_orgs):
+              # Update the item in the DynamoDB table with new allowedEdOrgs
+              response = dynamodb_table.update_item(
+                  Key={
+                      'Name': tenant_name
+                  },
+                  UpdateExpression='SET AllowedEdOrgs = :vals',
+                  ExpressionAttributeValues={
+                      ':vals': set(allowed_ed_orgs)
+                  }
+              )
+              return response
+
+          # Function to list all items in DynamoDB
+          def list_items(dynamodb_table):
+              # Scan the DynamoDB table to retrieve all items
+              response = dynamodb_table.scan()
+              data = response['Items']
+            
+              # Handle pagination for large tables.
+              while response.get('LastEvaluatedKey'):
+                  response = dynamodb_table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+                  data.extend(response['Items'])
+            
+              # DynamoDB returns "Number Set" columns as sets of decimals, which are not json serializable.
+              # We need to convert them to lists of integers.
+              for item in data:
+                  for key in item:
+                      if type(item[key]) is set:
+                          if type(list(item[key])[0]) is Decimal:
+                              item[key] = [int(decimal) for decimal in item[key]]
+              return list(data)
+            
+
+          def get_secrets(secret_name):
+              # Create a Secrets Manager client
+              secrets_manager = boto3.client('secretsmanager')
+              
+              # Get the secret value from Secrets Manager
+              secret_value = secrets_manager.get_secret_value(SecretId=secret_name)
+
+              return json.loads(secret_value['SecretString'])
+            
+          def validate_tenant_name(tenant_name, mode):
+              if not re.fullmatch("^([a-z,0-9]){1,29}$", tenant_name):
+                  print("Tenant names should include only numbers and lowercase letters, be a single word, and have a max length of 29.")
+                  raise ManagementError("Tenant names should include only numbers and lowercase letters, be a single word, and have a max length of 29.")
+
+              if mode == 'MultiTenant' and tenant_name in ['default', 'template']:
+                  print("Tenant name cannot be 'default' or 'template'.")
+                  raise ManagementError("Tenant name cannot be 'default' or 'template'.")
+
+              if mode == 'SingleTenant' and tenant_name != 'default':
+                  print("In SingleTenant mode, Tenant name must be 'default'.")
+                  raise ManagementError("In SingleTenant mode, Tenant name must be 'default'.")
+                
+          def validate_display_name(display_name):
+              if display_name is not None:
+                  if not re.fullmatch("^[a-zA-Z0-9_\-\s]{3,256}$", display_name):
+                      print("Display names should include upper and lowercase letters, numbers, dashes, underscores, spaces, and be between 3 and 256 characters.")
+                      raise ManagementError("Display names should include upper and lowercase letters, numbers, dashes, underscores, spaces, and be between 3 and 256 characters.")
+              else:
+                  print("DisplayName must be included in the request.")
+                  raise ManagementError("DisplayName must be included in the request.")
+            
+          def clone_template_databases(conn, tenant_name):
+              try:
+                  # Specify the template database names and the desired output names
+                  admin_db_template = 'admin_template'
+                  security_db_template = 'security_template'
+                  output_admin_db = 'admin_' + tenant_name
+                  output_security_db = 'security_' + tenant_name
+
+                  # Execute SQL queries to clone the template databases
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"CREATE DATABASE {output_admin_db} TEMPLATE {admin_db_template}")
+                      cursor.execute(f"CREATE DATABASE {output_security_db} TEMPLATE {security_db_template}")
+
+              except psycopg2.Error as e:
+                  print("Error creating databases.  Check function logs for more information.")
+                  print(e)
+                  raise ManagementError("Error creating databases.  Check function logs for more information.")
+                
+                
+          def check_if_tenant_exists(conn, tenant_name):
+              admin_db = 'admin_' + tenant_name
+              security_db = 'security_' + tenant_name
+              admin_db_count = [];
+              security_db_count = []
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"select exists( SELECT datname FROM pg_catalog.pg_database WHERE datname = '{admin_db}');")
+                      admin_db_count = cursor.fetchone()
+                      cursor.execute(f"select exists( SELECT datname FROM pg_catalog.pg_database WHERE datname = '{security_db}');")
+                      security_db_count = cursor.fetchone()
+              except psycopg2.Error as e:
+                  print("Error checking if the tenant exists.  Check function logs for more information.")
+                  print(e)
+                  raise ManagementError("Error checking if the tenant exists.  Check function logs for more information.")
+              if admin_db_count[0] or security_db_count[0]:
+                  return True
+              return False
+            
+                
+          def check_for_ods_instance(conn, tenant_name):
+              #check for ODS instances tied to admin database. If found raise ManagementError.
+              ods_count = []
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"select count(odsinstanceid) from dbo.odsinstances;")
+                      ods_count = cursor.fetchone()
+              except psycopg2.Error as e:
+                  print("Error checking for ODS instances. Check function logs for more information.")
+                  print(e)
+                  raise ManagementError("Error checking for ODS instances. Check function logs for more information.")
+              if ods_count[0] == 0:
+                  return
+              print("Tenant found to still have ODS instances tied to it. You must have these deleted before actions can be continued.")
+              raise ManagementError("Tenant found to still have ODS instances tied to it. You must have these deleted before actions can be continued.")
+
+          def delete_tenant_databases(conn, tenant_name):
+              # Specify the tenant-specific database names to be deleted
+              admin_db = 'admin_' + tenant_name
+              security_db = 'security_' + tenant_name
+              try:
+                  # Execute SQL queries to drop the tenant-specific databases
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"select pg_terminate_backend(pid) from pg_stat_activity where datname='{admin_db}';")
+                      cursor.execute(f"select pg_terminate_backend(pid) from pg_stat_activity where datname='{security_db}';")
+                      cursor.execute(f"DROP DATABASE IF EXISTS {admin_db}")
+                      cursor.execute(f"DROP DATABASE IF EXISTS {security_db}")
+                      return
+              except psycopg2.Error as e:
+                  print("Error dropping databases. Check function logs for more information.")
+                  print(e)
+                  raise ManagementError("Error dropping databases. Check function logs for more information.")
+                
+          def create_admin_connection(secret_values, tenant_name):
+              admin_db = 'admin_' + tenant_name
+              conn_string = f"host={secret_values['host']} dbname={admin_db} port=5432 user={secret_values['username']} password={secret_values['password']}"
+              try:
+                  conn = psycopg2.connect(conn_string)
+              except psycopg2.Error as e:
+                  print("Error connecting to admin database.  Check function logs for more information.")
+                  print(e)
+                  raise ManagementError("Error connecting to admin database.  Check function logs for more information.")
+              conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+              return conn
+                
+          def check_existing_client_id(conn, display_name):
+              results = []
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"select clientid from adminapi.applications where displayname ='{display_name}'") #sanitize display_name
+                      results = cursor.fetchall()
+              except psycopg2.Error as e:
+                  print("Error selecting from adminapi.applications table.  Check function logs for more information.")
+                  print(e)
+                  raise ManagementError("Error selecting from adminapi.applications table.  Check function logs for more information.")
+
+              if len(results) == 1:
+                  return results[0][0]
+              elif len(results) > 1:
+                  print(f"Multiple keys found for '{display_name}'.  Manual intervention is requied.")
+                  raise ManagementError(f"Multiple keys found for '{display_name}'.  Manual intervention is requied.")
+                
+              return False
+            
+          def update_admin_api_key(conn, display_name, admin_secret, client_id):
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"""UPDATE adminapi.applications
+                                        SET
+                                          clientid='{client_id}',
+                                          clientsecret='{admin_secret['db_value']}'
+                                        WHERE
+                                          displayname = '{display_name}';""") #sanitize display_name
+              except psycopg2.Error as e:
+                  print("Error updating adminapi.applications tables.  Check function logs for more information.")
+                  print(e)
+                  raise ManagementError("Error updating adminapi.applications tables.  Check function logs for more information.")
+                                      
+          def create_admin_api_key(conn, display_name, admin_secret, client_id):
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"""INSERT INTO adminapi.applications
+                                      (concurrencytoken, clientid, clientsecret, "type", permissions, displayname)
+                                      VALUES (
+                                      '{uuid.uuid4()}',
+                                      '{client_id}',
+                                      '{admin_secret['db_value']}',
+                                      'confidential',
+                                      '["ept:token","gt:client_credentials","scp:edfi_admin_api/full_access"]',
+                                      '{display_name}'
+                                      );""") #sanitize display_name
+              except psycopg2.Error as e:
+                  print("Error inserting into adminapi.applications tables.  Check function logs for more information.")
+                  print(e)
+                  raise ManagementError("Error inserting into adminapi.applications tables.  Check function logs for more information.")
+            
+          def generate_admin_api_secret():
+              format_version = 1 # Always version 1
+              hash_alg_version = 1 # 0 = SHA1, 1 = SHA256, 2 = SHA512
+              iteration_count = 10_000 # Hard coded value in OpenIddict is 10_000
+            
+              hash_alg = ["sha1", "sha256", "sha512"]
+              salt = secrets.token_bytes(16) # Generate random bytes for salt
+              secret = ''.join((secrets.choice(string.ascii_letters + string.digits + string.punctuation) for i in range(128))) #Generate random string for secret
+            
+              # Generate the actual hash value
+              hashed_input = pbkdf2_hmac(
+                  hash_alg[hash_alg_version], # Select hash name
+                  secret.encode(), # value to hash  as bytes
+                  salt,
+                  iteration_count
+              )
+            
+              # Build output bytes
+              byte_arr = bytearray()
+              byte_arr.extend(format_version.to_bytes(1, byteorder='big'))
+              byte_arr.extend(hash_alg_version.to_bytes(4, byteorder='big'))
+              byte_arr.extend(iteration_count.to_bytes(4, byteorder='big'))
+              byte_arr.extend(len(salt).to_bytes(4, byteorder='big'))
+              byte_arr.extend(salt)
+              byte_arr.extend(hashed_input)
+            
+              # Convert output bytes to base64
+              db_value = base64.b64encode(bytes(byte_arr)).decode('utf-8')
+              
+              return { "db_value": db_value, "secret": secret }
+              
+              
+          def reload_tenants(env_label):
+              ssm = boto3.client('ssm')
+              response = ssm.send_command(
+                  Targets=[
+                      {
+                          'Key': 'tag:Environment',
+                          'Values': [
+                              env_label
+                          ]
+                      },
+                      {
+                          'Key': 'tag:EdFiApplication',
+                          'Values': [
+                              'WebApi', 'AdminApi'
+                          ]
+                      }
+                  ],
+                  DocumentName='AWS-RunShellScript',
+                  TimeoutSeconds=30,
+                  Comment=f'{env_label} Reload Tenants',
+                  Parameters={
+                      'commands': [
+                          'docker exec $(cat /opt/elasticbeanstalk/deployment/.aws_beanstalk.current-container-id) python3 resolve-secrets.py',
+                      ]
+                  }
+              )
+            
+              return response['Command']['Status']
+            
+
+          def lambda_handler(event, context):
+              conn = None
+              admin_conn = None
+              try:
+                  # Extract "Action" and "TenantName" from the Lambda event
+                  action = event.get('Action')
+                  tenant_name = event.get('TenantName')
+                  tenancy_mode = os.environ['TENANCY_MODE']
+                  allowed_ed_orgs = event.get('AllowedEdOrgs', None)
+                
+                  env_label = os.environ['ENVLABEL']
+                  secret_name = env_label + '-AuroraMasterSecret'
+
+                  # Concatenate "-tenants" to env_label for the DynamoDB table name
+                  table_name = env_label + '-tenants'
+
+                  # Create the DynamoDB client with the concatenated table name
+                  dynamodb = boto3.resource('dynamodb')
+                  table = dynamodb.Table(table_name)
+
+                  # Get database connection details from Secrets Manager
+                  secret_values = get_secrets(secret_name)
+                
+                
+                  # Aurora Database Connection
+                  if action in ["Add", "Remove", "Keygen"]:
+                      try:
+                          conn_string = "host={rds_host} dbname=postgres port=5432 user={name} password={password}".format(
+                          rds_host=secret_values['host'], name=secret_values['username'], password=secret_values['password'])
+                          conn = psycopg2.connect(conn_string)
+                          conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                      except psycopg2.Error as e:
+                          print("Error connecting to the postgres database.  Check function logs for more information.")
+                          print(e)
+                          raise ManagementError("Error connecting to the postgres database.  Check function logs for more information.")
+
+                  if action == 'Add':
+                      if tenancy_mode == 'SingleTenant':
+                          print("Adding tenants is not supported in SingleTenant mode.")
+                          raise ManagementError("Adding tenants is not supported in SingleTenant mode.")
+
+                      validate_tenant_name(tenant_name, tenancy_mode)
+
+                      if check_if_tenant_exists(conn, tenant_name):
+                          print(f"Tenant with name '{tenant_name}' already exists.")
+                          raise ManagementError(f"Tenant with name '{tenant_name}' already exists.")
+
+                      # Clone template databases and rename the output
+                      clone_template_databases(conn, tenant_name)
+                    
+                      # Add item to DynamoDB
+                      response = add_item(table, tenant_name, allowed_ed_orgs)
+
+                      print("Item added successfully, and template databases cloned")
+                      return "Item added successfully, and template databases cloned"
+                  elif action == 'Remove':
+                      if tenancy_mode == 'SingleTenant':
+                          print("Removing tenants is not supported in SingleTenant mode.")
+                          raise ManagementError("Removing tenants is not supported in SingleTenant mode.")
+
+                      validate_tenant_name(tenant_name, tenancy_mode)
+
+                      if check_if_tenant_exists(conn, tenant_name):
+                          # Create connection to admin db
+                          admin_conn = create_admin_connection(secret_values, tenant_name)
+                        
+                          # Check for OdsInstances tied to the given tenant
+                          check_for_ods_instance(admin_conn, tenant_name)
+                        
+                          # Delete item from DynamoDB
+                          response = remove_item(table, tenant_name)
+            
+                          # Delete tenant-specific databases
+                          delete_tenant_databases(conn, tenant_name)
+                          
+                          print("Item removed successfully, and tenant-specific databases deleted")
+                          return "Item removed successfully, and tenant-specific databases deleted"
+                      else:
+                          print(f"Tenant with name '{tenant_name}' does not exist.")
+                          raise ManagementError(f"Tenant with name '{tenant_name}' does not exist.")
+                  elif action == 'Update':
+                      validate_tenant_name(tenant_name, tenancy_mode)
+                      response = update_item(table, tenant_name, allowed_ed_orgs)
+                      
+                      print("Tenant AllowedEdOrgs updated successfully.")
+                      return "Tenant AllowedEdOrgs updated successfully."
+                    
+                  elif action == 'List':
+                      if tenancy_mode == 'SingleTenant':
+                          print("Name: 'default'")
+                          return {'Name': 'default'}
+                      if tenancy_mode == 'MultiTenant':
+                          # List all items in DynamoDB
+                          items = list_items(table)
+                          print(items)
+                          return items
+                  elif action == 'Keygen':
+                      # Generate keys for Admin Api
+                      validate_tenant_name(tenant_name, tenancy_mode)
+                      display_name = event.get('DisplayName')
+                      validate_display_name(display_name)
+                      if check_if_tenant_exists(conn, tenant_name):
+                          admin_api_secret = generate_admin_api_secret()
+                          admin_conn = create_admin_connection(secret_values, tenant_name)
+                          client_id = check_existing_client_id(admin_conn, display_name)
+                          print('client_id:', client_id)
+
+                          if client_id:
+                              update_admin_api_key(admin_conn, display_name, admin_api_secret, client_id)
+                          else:
+                              client_id = ''.join((secrets.choice(string.ascii_letters + string.digits) for i in range(16)))
+                              create_admin_api_key(admin_conn, display_name, admin_api_secret, client_id)
+                              
+                          return {'ClientId': client_id, 'ClientSecret': admin_api_secret['secret']}
+                      else:
+                          print("Tenant does not exist.")
+                          raise ManagementError("Tenant does not exist.")
+                        
+                  elif action == 'Reload':
+                      # Reload tenants with SSM command
+                      status = reload_tenants(env_label)
+                      print(f'Command {status}')
+                      return f'Command {status}'
+                    
+                  else:
+                      print('Invalid action. Supported actions are "Add", "Remove", "Update", "List", "Keygen", and "Reload"')
+                      return 'Invalid action. Supported actions are "Add", "Remove", "Update", "List", "Keygen", and "Reload"'
+                      
+              except ManagementError as e:
+                  raise ManagementError(e)
+                  
+              except Exception as e:
+                  print("Internal Server Error.")
+                  print(e)
+                  raise Exception("Internal Server Error.")
+                  
+              finally:
+                  # Close the Aurora connection in the finally block to ensure it's always closed
+                  if conn:
+                      print('Closing connection to postgres db')
+                      conn.close()
+                    
+                  if admin_conn:
+                      print('Closing connection to admin db')
+                      admin_conn.close() 
+                      
+          class ManagementError(Exception):
+              pass
+
+  TenantManagementVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'TenantManagementFunction'
+  'Fn::ForEach::TenantManagementPermission':
+    - AccountId
+    - !Ref AdminAccountIds
+    - 'TenantManagementPermission${AccountId}':
+        Type: 'AWS::Lambda::Permission'
+        Properties:
+          Action: 'lambda:InvokeFunction'
+          FunctionName: !Ref 'TenantManagementFunction'
+          Principal: !Ref AccountId
+  TenantManagementRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${TenantManagementFunction}'
+      retentionInDays: 365
+
+  GetBsResourcesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: AllowedActionsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticbeanstalk:DescribeEnvironmentResources
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - autoscaling:DescribeAutoScalingGroups
+                  - cloudformation:ListStackResources
+                Resource:
+                  - '*'
+
+  SetCloudWatchRetentionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: AllowedActionsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                  - logs:PutRetentionPolicy
+                  - logs:CreateLogGroup
+                Resource:
+                  - '*'
+  SetCloudWatchRetentionLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    DeletionPolicy: Delete
+    Properties:
+      FunctionName: !Sub '${EnvLabel}-SetCloudWatchRetention'
+      Layers:
+        - !Ref 'CRHelperLambdaLayer'
+      Handler: index.lambda_handler
+      Description: CloudFormation Custom Resource provider.  Sets retention on CloudWatch Log Groups.
+      Runtime: python3.11
+      MemorySize: 128
+      Role: !GetAtt SetCloudWatchRetentionRole.Arn
+      ReservedConcurrentExecutions: 10
+      Timeout: 20
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaDefaultSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Code:
+        ZipFile: |
+          import json
+          import botocore
+          import boto3
+          import signal
+          from crhelper import CfnResource
+
+          helper = CfnResource()
+
+          def lambda_handler(event, context):
+              signal.alarm(int((context.get_remaining_time_in_millis() / 1000) - 1))
+              helper(event, context)
+              
+
+          @helper.create    
+          def create(event, _):
+              client = boto3.client('logs')
+              log_group_name = event['ResourceProperties']['logGroupName']
+
+              try:
+                  response = client.create_log_group(
+                      logGroupName=log_group_name
+                  )
+                  print('log group created')
+              
+              except botocore.exceptions.ClientError as error:
+                  if 'ResourceAlreadyExistsException' in str(error):
+                      print('log group already exists')
+                  
+              response = client.put_retention_policy(
+                  logGroupName=log_group_name,
+                  retentionInDays=int(event['ResourceProperties']['retentionInDays'])
+              )
+
+              
+          @helper.update
+          @helper.delete
+          def no_op(_, __):
+              pass
+
+
+          def timeout_handler(_signal, _frame):
+              '''Handle SIGALRM'''
+              raise Exception('lambda function timeout exceeded')
+
+
+          signal.signal(signal.SIGALRM, timeout_handler) 
+  SetCloudWatchRetentionVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'SetCloudWatchRetentionLambdaFunction'
+  SetCloudWatchRetentionRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${SetCloudWatchRetentionLambdaFunction}'
+      retentionInDays: 365
+
+  BeanstalkUploadAndDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        - arn:aws:iam::aws:policy/AdministratorAccess-AWSElasticBeanstalk
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${EnvLabel}-BeanstalkUploadAndDeploy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${S3BucketSourceCode}'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${S3BucketSourceCode}/*'
+              - Effect: Allow
+                Action:
+                  - sns:GetTopicAttributes
+                Resource: !Sub 'arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${EnvLabel}-*'
+              - Effect: Allow
+                Action: 
+                  - ssm:*
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ed-fi/beanstalk/environments/${EnvLabel}-*'
+
+  BeanstalkUploadAndDeployLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    DeletionPolicy: Delete
+    Properties:
+      FunctionName: !Sub '${EnvLabel}-BeanstalkUploadAndDeploy'
+      Handler: index.lambda_handler
+      Description: CloudFormation Custom Resource provider.  Uploads and deploys application versions to beanstalk.
+      Runtime: python3.11
+      MemorySize: 128
+      Role: !GetAtt BeanstalkUploadAndDeployRole.Arn
+      ReservedConcurrentExecutions: 2
+      Timeout: 420
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaDefaultSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Code:
+        ZipFile: |
+          import json
+          import time
+          import boto3
+          import logging
+          import cfnresponse
+          from botocore.exceptions import ClientError
+
+          eb_client = boto3.client('elasticbeanstalk')
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def get_parameter(name):
+              client = boto3.client('ssm')
+              try:
+                  response = client.get_parameter(
+                      Name=name
+                  )
+                  print("Retrieved parameter:", response)
+                  return response['Parameter']['Value']
+              except:
+                  return False
+              
+
+          def lambda_handler(event, context):
+              logger.info(event)
+
+              # Parse input parameters from the CloudFormation custom resource
+              request_type = event['RequestType']
+              s3_bucket = event['ResourceProperties'].get('S3Bucket')
+              s3_key = event['ResourceProperties'].get('S3Key')
+              beanstalk_application = event['ResourceProperties'].get('BeanstalkApplication')
+              beanstalk_environment = event['ResourceProperties'].get('BeanstalkEnvironment')
+              wait_for_ssm = event['ResourceProperties'].get('WaitForSSM')
+              application_version = f"{beanstalk_application}-{context.aws_request_id}"
+
+              if not all([s3_bucket, s3_key, beanstalk_application, beanstalk_environment]):
+                  e = "Missing required ResourceProperties"
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e))
+                  exit(1)
+
+              try:
+                  if request_type in ['Create', 'Update']:
+                      
+                      # TODO: Check if same app version exists.  If it does, continue to wait.
+                      # This would be to support deployments that take longer than 15 mins.
+                      
+                      # Create a new Elastic Beanstalk application version
+                      logger.info("Creating new application version in Elastic Beanstalk")
+                      response = eb_client.create_application_version(
+                          ApplicationName=beanstalk_application,
+                          VersionLabel=application_version,
+                          SourceBundle={
+                              'S3Bucket': s3_bucket,
+                              'S3Key': s3_key
+                          },
+                          Process=False
+                      )
+                      logger.info(f"Application version created: {response}")
+
+                      # TODO: Set the deployment strategy again, incase it was changed outside of CF.
+
+                      # Deploy the new version to the specified environment
+                      logger.info("Updating Elastic Beanstalk environment")
+                      response = eb_client.update_environment(
+                          ApplicationName=beanstalk_application,
+                          EnvironmentName=beanstalk_environment,
+                          VersionLabel=application_version
+                      )
+                      logger.info(f"Environment update requested: {response}")
+                      
+                      # TODO: This code will wait for the deployment to complete.
+                      # Need to plan for this to take longer than the lambda timeout.
+                      # Cloudformation will retry 3 times.
+                      # After wait returns, we should check if the deployment was successful.
+                      # waiter = eb_client.get_waiter('environment_updated')
+                      # waiter.wait(
+                      #     ApplicationName=beanstalk_application,
+                      #     EnvironmentNames=[beanstalk_environment],
+                      #     VersionLabel=application_version,
+                      #     IncludeDeleted=False
+                      # )
+                      
+                      # This parameter is created during application deployment.
+                      # CloudFormation will fail if we return before this exists.
+                      # This wait is unnecessary if waiting for the full deployment.
+                      if wait_for_ssm:
+                          print(f'Waiting for {wait_for_ssm}')
+                          while get_parameter(wait_for_ssm) == False:
+                              time.sleep(20)
+
+                  elif request_type == 'Delete':
+                      # Handle cleanup if needed
+                      logger.info("Delete request received - no action taken.")
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, reason="Operation successful")
+
+              except ClientError as e:
+                  logger.error(f"Error occurred: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e))
+              except Exception as e:
+                  logger.error(f"Unexpected error occurred: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {}, reason=str(e))
+
+  BeanstalkUploadAndDeployVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'BeanstalkUploadAndDeployLambdaFunction'
+  BeanstalkUploadAndDeployRetention:
+    DependsOn: BeanstalkUploadAndDeployVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${BeanstalkUploadAndDeployLambdaFunction}'
+      retentionInDays: 365
+
+  ODSManagementRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${EnvLabel}-lambda-ods-management'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: 
+                  - !Ref RDSSecret
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvLabel}-WebApiSecret-*'
+  ODSManagementFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Role: !GetAtt 'ODSManagementRole.Arn'
+      Layers:
+        - !Ref 'PsycopgLambdaLayer'
+        - !Ref 'PycryptodomeLambdaLayer'
+      Timeout: 30
+      ReservedConcurrentExecutions: 1
+      Handler: index.lambda_handler
+      Description: Manages ODS in Ed-Fi 7+.
+      FunctionName: !Sub '${EnvLabel}-ODSManagement'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          ENVLABEL: !Ref EnvLabel
+          CONNECTION_IDLE: !Ref WebAPIConnectionIdleLifetime
+          MAXIMUM_POOL_SIZE: !Ref WebAPIMaxPoolSize
+          SBE_TENANCY_MODE: !Ref EdFiTenancyMode
+          READ_REPLICA: !Ref DeployReplica
+          API_PUBLISHER: !Ref APIPublisher
+      Code:
+        ZipFile: |
+          import json
+          import psycopg2
+          import os
+          import re
+          import boto3
+          from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+          from Crypto.Cipher import AES
+          from Crypto.Util.Padding import pad
+          from Crypto.Hash import HMAC, SHA256
+          import base64
+
+          # Read "SBE_tenancy_mode" from environment variable
+          SBE_tenancy_mode = os.environ.get('SBE_TENANCY_MODE')
+          env_label = os.environ['ENVLABEL']
+          connection_idle = os.environ['CONNECTION_IDLE']
+          maximum_pool_size = os.environ['MAXIMUM_POOL_SIZE']
+          read_replica = 1 if os.environ['READ_REPLICA'] == "true" else 0
+          api_publisher = 1 if os.environ['API_PUBLISHER'] == "true" else 0
+          secret_name = env_label + '-AuroraMasterSecret'
+          secret_values = None
+          conn = None
+
+          #The event_requirements object used to return a useful error about the requirements of each action back to the user. This could also be expanded later for a 'Help' action or something like that.
+          #If in the future an action is added/modified this object will need to be edited/updated. As it exists now there are Action objects with a Required object that returns each variable 
+          #required in the event JSON object when called on that object.
+
+          event_requirements = {
+            "Action": {
+              "Add": {
+                "Required": [
+                  "Action",
+                  "TenantName",
+                  "ODSName",
+                  "TemplateName"
+                ],
+                "Optional": [
+                  "AllowedEdOrgs"
+                ]
+              },
+              "Remove": {
+                "Required": [
+                  "Action",
+                  "TenantName",
+                  "ODSName"
+                ]
+              },
+              "ListTemplates": {
+                "Required": [
+                  "Action"]
+              },
+              "Update": {
+                "Required": [
+                  "Action",
+                  "TenantName",
+                  "ODSName"
+                ]
+              }
+            }
+          }
+
+          def lambda_handler(event, context):
+              #validate the input and return errors based on above event_requirements JSON
+              action, tenant_name, ODSName, template_name, allowed_edorgs = validate_input(event)
+              global secret_values
+              # Get database connection details from Secrets Manager
+              secret_values = get_secrets(secret_name)
+              host = secret_values['host']
+              name = secret_values['username']
+              password = secret_values['password']
+              
+              #Set up for the connection based on action
+              db_conn = None
+              if action == "ListTemplates":
+                  db_conn = "postgres"
+              else:
+                  validate_name(tenant_name, SBE_tenancy_mode, "Tenant")
+                  validate_name(ODSName, SBE_tenancy_mode, "ODS")
+                  ods_DB_name = get_ods_DB_name(tenant_name, ODSName)
+                  db_conn = "admin_" + tenant_name
+                  
+              conn_string = (f"host={host} dbname={db_conn} port=5432 user={name} password={password}")
+              
+              try:
+                  global conn
+                  conn = psycopg2.connect(conn_string)
+                  conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+
+                  # Check if the "Action" parameter is valid
+                  if action not in ["Add", "Update", "Remove", "ListTemplates"]:
+                      print('Invalid Action. Please provide "Add", "Update", "ListTemplates", or "Remove".')
+                      raise ManagementError('Invalid Action. Please provide "Add", "Update", "ListTemplates", or "Remove".')
+
+                  # Perform different actions based on the provided "Action"
+                  if action == "Add":
+                      result = create_ODS(tenant_name, ods_DB_name, template_name, ODSName, allowed_edorgs)
+                  elif action == "Update":
+                      result = update_ODS(tenant_name, ods_DB_name, ODSName)
+                  elif action == "Remove":
+                      result = delete_ODS(tenant_name, ods_DB_name, ODSName)
+                  elif action == "ListTemplates":
+                      result = list_templates()
+
+                  print(result)
+                  return result
+              
+              except ManagementError as e:
+                  raise ManagementError(e)
+
+              except Exception as e:
+                  print("Internal Server Error.")
+                  print(e)
+                  raise Exception("Internal Server Error.")
+                  
+              finally:
+                  # Close the Aurora connection in the finally block to ensure it's always closed
+                  if conn:
+                      conn.close()
+
+
+          def validate_name(name, mode, type_of_validation):
+              if not re.fullmatch("^([a-z,0-9]){1,29}$", name):
+                  print(f"{type_of_validation} names should include only numbers and lowercase letters, be a single word, and have a max length of 29.")
+                  raise ManagementError(f"{type_of_validation} names should include only numbers and lowercase letters, be a single word, and have a max length of 29.")
+
+              if type_of_validation == "Tenant":
+                  if mode == 'MultiTenant' and name in ['default', 'template']:
+                      print("Tenant name cannot be 'default' or 'template'.")
+                      raise ManagementError("Tenant name cannot be 'default' or 'template'.")
+
+                  if mode == 'SingleTenant' and name != 'default':
+                      print("In SingleTenant mode, Tenant name must be 'default'.")
+                      raise ManagementError("In SingleTenant mode, Tenant name must be 'default'.")
+
+          def create_ODS(tenant_name, ods_DB_name, template_name, ODSName, allowed_edorgs):
+              # Check to see if ODS already exists. Raise error if it does.
+              if check_for_ods_instance(ods_DB_name) == True:
+                  print(f"ODS '{ODSName}' already exists for tenant '{tenant_name}'.")
+                  raise ManagementError(f"ODS '{ODSName}' already exists for tenant '{tenant_name}'.")
+                  
+              # Prepare instancetype json object
+              instancetype = json.dumps({"allowedEdOrgs": allowed_edorgs}) if allowed_edorgs else ''
+
+              #Clone the template database
+              with conn.cursor() as cursor:
+                  clone_template_database(ods_DB_name, template_name)
+                  encrypted_ods_connection_string = encrypt_connection_string(ods_DB_name, 'ODS')
+                  add_ods_to_odsinstances(ODSName, instancetype, encrypted_ods_connection_string)
+                  if read_replica:
+                      # Encrypt connection string for reader endpoint
+                      encrypted_reader_connection_string = encrypt_connection_string(ods_DB_name, 'ReadReplica')
+                      # Add odsinstancederivative
+                      add_odsinstancederivative(ODSName, encrypted_reader_connection_string, 'ReadReplica')
+                  if api_publisher:
+                      # Encrypt connection string for snapshot
+                      encrypted_snapshot_connection_string = encrypt_connection_string(ods_DB_name, 'Snapshot')
+                      # Add odsinstancederivative
+                      add_odsinstancederivative(ODSName, encrypted_snapshot_connection_string, 'Snapshot')
+
+              return "ODS created successfully"
+
+          def update_ODS(tenant_name, ods_DB_name, ODSName):
+              #Updates the connection string
+              verify_ods_ownership(ODSName)
+              encrypted_ods_connection_string = encrypt_connection_string(ods_DB_name, 'ODS')
+              update_ods_connection_string(ODSName, encrypted_ods_connection_string)
+              if read_replica:
+                  # Encrypt connection string for reader endpoint
+                  encrypted_reader_connection_string = encrypt_connection_string(ods_DB_name, 'ReadReplica')
+                  # Update odsinstancederivative
+                  update_ods_derivative_connection_string(ODSName, encrypted_reader_connection_string, 'ReadReplica')
+              if api_publisher:
+                  # Encrypt connection string for snapshot
+                  encrypted_snapshot_connection_string = encrypt_connection_string(ods_DB_name, 'Snapshot')
+                  # Update odsinstancederivative
+                  update_ods_derivative_connection_string(ODSName, encrypted_snapshot_connection_string, 'Snapshot')
+              return "Connection string successfully updated."
+
+          def delete_ODS(tenant_name, ods_DB_name, ODSName):
+              # Validate that ODS exists
+              # Validate ODS belongs to specified tenant
+              # Kill active connections
+              # Drop database
+              # Remove dbo.odsinstances entry
+              if check_for_ods_instance(ods_DB_name) == False:
+                  print(f"ODS with name {ods_DB_name} does not exist.")
+                  raise ManagementError(f"ODS with name {ods_DB_name} does not exist.")
+              verify_ods_ownership(ODSName)
+              if read_replica:
+                  remove_odsinstancederivatives(ODSName, 'ReadReplica')
+              if api_publisher:
+                  remove_odsinstancederivatives(ODSName, 'Snapshot')
+              remove_odsinstance_entry(ODSName)
+              delete_ods_instance(ods_DB_name)
+
+              return "ODS successfully deleted and entry removed from dbo.odsinstances."
+
+          def list_templates():
+              #lists all available templates
+              #select datname from pg_database where datname like 'odst_%'
+              template_list = []
+              reults = []
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"SELECT datname FROM pg_catalog.pg_database WHERE datname like 'odst_%'")
+                      results = cursor.fetchall()
+
+                  for template_name in results:
+                      template_list.append(template_name[0])
+                  print(template_list)
+                  return template_list
+
+              except Exception as e:
+                  print("Error while attempting list available templates.")
+                  print(e)
+                  raise ManagementError("Error while attempting list available templates.")
+                  
+          def clone_template_database(ods_DB_name, template_name):
+              # Execute SQL queries to clone the template databases
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"CREATE DATABASE {ods_DB_name} TEMPLATE {template_name}")
+                      return
+              except Exception as e:
+                  print("Error while attempting to create the ODS.")
+                  print(e)
+                  raise ManagementError("Error while attempting to create the ODS.")
+
+
+
+          def get_secrets(secret_name):
+              # Create a Secrets Manager client
+              secrets_manager = boto3.client('secretsmanager')
+
+              # Get the secret value from Secrets Manager
+              secret_value = secrets_manager.get_secret_value(SecretId=secret_name)
+
+              return json.loads(secret_value['SecretString'])
+
+          def check_for_ods_instance(ods_DB_name):
+              #returns true if ODS exists. False otherwise.
+              ods_count = []
+              with conn.cursor() as cursor:
+                  cursor.execute(f"SELECT count(datname) FROM pg_catalog.pg_database WHERE datname = '{ods_DB_name}';")
+                  ods_count = cursor.fetchone()
+              if ods_count[0] == 0:
+                  return False
+              return True
+
+          def get_ods_DB_name(tenant_name, ODSName):
+              prefix = 'ods_'
+              output_ods = 'ods_' + tenant_name + "_" + ODSName
+              return output_ods
+
+          def verify_ods_ownership(ODSName):
+              ods_count = []
+              with conn.cursor() as cursor:
+                  cursor.execute(f"select count(odsinstanceid) from dbo.odsinstances where name = '{ODSName}';")
+                  ods_count = cursor.fetchone()
+              if ods_count[0] > 0:
+                  return
+              print("This tenant does not own the ODS submitted. Please review ownership via dbo.odsinstances.")
+              raise ManagementError("This tenant does not own the ODS submitted. Please review ownership via dbo.odsinstances.")
+
+          def delete_ods_instance(ods_DB_name):
+              #delete the ODS instance
+              try:
+                  with conn.cursor() as cursor:
+                      #terminate connections to ods
+                      cursor.execute(f"select pg_terminate_backend(pid) from pg_stat_activity where datname='{ods_DB_name}';")
+                      #delete ODS
+                      cursor.execute(f"drop database {ods_DB_name};")
+              except Exception as e:
+                  print(e)
+                  print("Error while attempting to delete the ODS.")
+                  raise ManagementError("Error while attempting to delete the ODS.")
+
+              return
+
+          def remove_odsinstance_entry(ODSName):
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"delete from dbo.odsinstances where name = '{ODSName}';")
+              except Exception as e:
+                  print("This ODS can not be deleted because it encountered an error during the dbo.odsinstances delete process.")
+                  print(e)
+                  raise ManagementError("This ODS can not be deleted because it encountered an error during the dbo.odsinstances delete process.")
+              return
+
+          def get_ods_instance_id(ODSName):
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"select odsinstanceid from dbo.odsinstances where name = '{ODSName}';")
+                      results = cursor.fetchall()
+                      if len(results) == 1:
+                          odsinstanceid = results[0][0]
+                          return odsinstanceid
+                      else:
+                          print("Encountered an error getting the ODS instance ID.")
+                          raise ManagementError("Encountered an error getting the ODS instance ID.")
+              except Exception as e:
+                  print("Encountered an error getting the ODS instance ID.")
+                  print(e)
+                  raise ManagementError("Encountered an error getting the ODS instance ID.")
+              return
+
+          def remove_odsinstancederivatives(ODSName, derivative_type):
+              ods_id = get_ods_instance_id(ODSName)
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"delete from dbo.odsinstancederivatives where odsinstance_odsinstanceid = '{ods_id}' and derivativetype = '{derivative_type}';")
+              except Exception as e:
+                  print("This ODS can not be deleted because it encountered an error during the dbo.odsinstancederivatives delete process.")
+                  print(e)
+                  raise ManagementError("This ODS can not be deleted because it encountered an error during the dbo.odsinstancederivatives delete process.")
+              return
+
+          def add_ods_to_odsinstances(ODSName, instancetype, connectionstring):
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"insert into dbo.odsinstances(name, instancetype, connectionstring) values ('{ODSName}', '{instancetype}', '{connectionstring}');")
+              except psycopg2.Error as e:
+                  print("ODS was created but encountered an error while attempting to add the ODS to the odsinstances table.")
+                  print(e)
+                  raise ManagementError("ODS was created but encountered an error while attempting to add the ODS to the odsinstances table.")
+              return
+
+          def add_odsinstancederivative(ODSName, connectionstring, derivative_type):
+              ods_id = get_ods_instance_id(ODSName)
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"insert into dbo.odsinstancederivatives(odsinstance_odsinstanceid, derivativetype, connectionstring) values ('{ods_id}', '{derivative_type}', '{connectionstring}');")
+              except psycopg2.Error as e:
+                  print("ODS was created but encountered an error while attempting to add the ODS derivative to the odsinstancederivatives table.")
+                  print(e)
+                  raise ManagementError("ODS was created but encountered an error while attempting to add the ODS derivative to the odsinstancederivatives table.")
+              return
+
+          def update_ods_connection_string(ODSName, connectionstring):
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"update dbo.odsinstances set connectionstring = '{connectionstring}' where name = '{ODSName}';")
+              except psycopg2.Error as e:
+                  print("Error while attempting update the connection string.")
+                  print(e)
+                  raise ManagementError("Error while attempting update the connection string.")
+              return
+
+          def update_ods_derivative_connection_string(ODSName, connectionstring, derivative_type):
+              ods_id = get_ods_instance_id(ODSName)
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"update dbo.odsinstancederivatives set connectionstring = '{connectionstring}' where odsinstance_odsinstanceid = '{ods_id}' and derivativetype = '{derivative_type}';")
+              except psycopg2.Error as e:
+                  print("Error while attempting to update the ODS derivative connection string.")
+                  print(e)
+                  raise ManagementError("Error while attempting to update the ODS derivative connection string.")
+              return
+
+          def validate_input(event):
+              action = event.get('Action', None)
+              template_name = event.get('TemplateName', None)
+              ODSName = event.get('ODSName', None)
+              # Extract the "tenant_name" from the input data unless SBE is in single tenant mode then set to "default"
+              tenant_name = "default" if SBE_tenancy_mode == "SingleTenant" else event.get("TenantName", None)
+              
+              # Validate AllowedEdOrgs
+              allowed_edorgs = event.get('AllowedEdOrgs', None)
+              if allowed_edorgs != None:
+                  if type(allowed_edorgs) is str:
+                      allowed_edorgs = [ allowed_edorgs ]
+                      
+                  if type(allowed_edorgs) is list:
+                      allowed_edorgs = list(map(str,allowed_edorgs))
+                      for edorg in allowed_edorgs:
+                          if not re.fullmatch("^([0-9])+$", edorg):
+                              raise ManagementError('AllowedEdOrgs must be a list of integers')
+                  else:
+                      raise ManagementError(f"AllowedEdOrgs must be a list of integers")
+              
+              if action == "Add":
+                  if tenant_name and ODSName and template_name:
+                      return action,tenant_name,ODSName,template_name,allowed_edorgs
+              if action == "Update":
+                  if tenant_name and ODSName:
+                      return action,tenant_name,ODSName, None, None
+              if action == "Remove":
+                  if tenant_name and ODSName:
+                      return action,tenant_name,ODSName, None, None
+              if action == "ListTemplates":
+                  return action, tenant_name, None, None, None
+              print(f"Required parameters not present for {action} action. Requires: {event_requirements['Action'][action]['Required']}")
+              raise ManagementError(f"Required parameters not present for {action} action. Requires: {event_requirements['Action'][action]['Required']}")
+              
+
+
+          def encrypt_connection_string(ods_DB_name, derivative_type):
+              host = secret_values['host']
+              if derivative_type == 'Snapshot':
+                host = re.sub(r'^[^.]*', f'clone-{env_label}', host)
+              elif derivative_type == 'ReadReplica':
+                host = host.replace('.cluster-', '.cluster-ro-')
+              name = secret_values['username']
+              password = secret_values['password']
+              connectionstring = (f"host={host}; database={ods_DB_name}; port=5432; username={name}; password={password}; Application Name=EdFi.Ods.WebApi; SSL Mode=Require; Trust Server Certificate=true; Maximum Pool Size={os.environ['MAXIMUM_POOL_SIZE']}; Connection Idle Lifetime={os.environ['CONNECTION_IDLE']};")
+              client = boto3.client('secretsmanager')
+              response = client.get_secret_value(SecretId=f'{env_label}-WebApiSecret')
+              base64_key = response['SecretString']
+              key = base64.b64decode(base64_key)
+              cipher = AES.new(key, AES.MODE_CBC)
+              ciphertext = cipher.encrypt(pad(connectionstring.encode(), cipher.block_size))
+              h = HMAC.new(key, digestmod=SHA256)
+              h.update(ciphertext)
+              b64ciphertext = base64.b64encode(ciphertext).decode('utf-8')
+              b64iv = base64.b64encode(cipher.iv).decode('utf-8')
+              b64signature = base64.b64encode(h.digest()).decode('utf-8')
+              return (f"{b64iv}|{b64ciphertext}|{b64signature}")
+              
+          class ManagementError(Exception):
+              pass
+
+  ODSManagementVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'ODSManagementFunction'
+  'Fn::ForEach::ODSManagementPermission':
+    - AccountId
+    - !Ref AdminAccountIds
+    - 'ODSManagementPermission${AccountId}':
+        Type: 'AWS::Lambda::Permission'
+        Properties:
+          Action: 'lambda:InvokeFunction'
+          FunctionName: !Ref 'ODSManagementFunction'
+          Principal: !Ref AccountId
+  ODSManagementRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${ODSManagementFunction}'
+      retentionInDays: 365
+
+  EdOrgManagementRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${EnvLabel}-lambda-edorg-management'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: 
+                  - !Ref RDSSecret
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants'
+  EdOrgManagementFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Role: !GetAtt 'EdOrgManagementRole.Arn'
+      Layers:
+        - !Ref 'PsycopgLambdaLayer'
+      Timeout: 30
+      ReservedConcurrentExecutions: 1
+      Handler: index.lambda_handler
+      Description: Manages Education Organizations in Ed-Fi 7+.
+      FunctionName: !Sub '${EnvLabel}-EdOrgManagement'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          ENVLABEL: !Ref EnvLabel
+      Code:
+        ZipFile: |
+            import json
+            import psycopg2
+            import os
+            import boto3
+            import re
+            from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+
+            env_label = os.environ['ENVLABEL']
+            secret_name = env_label + '-AuroraMasterSecret'
+            secret_values = None
+            conn = None
+
+            #The event_requirements object used to return a useful error about the requirements of each action back to the user. This could also be expanded later for a 'Help' action or something like that.
+            #If in the future an action is added/modified this object will need to be edited/updated. As it exists now there are Action objects with a Required object that returns each variable 
+            #required in the event JSON object when called on that object.
+
+            event_requirements = {
+              "Action": {
+                "Add": {
+                  "Required": [
+                    "Action",
+                    "TenantName",
+                    "ODSName",
+                    "EdOrgId",
+                    "NameOfInstitution",
+                    "EdOrgCategory"
+                  ],
+                  "Optional": [
+                    "AddressType",
+                    "City",
+                    "Zip",
+                    "State",
+                    "Address",
+                    "StateEducationAgencyID"
+                  ]
+                },
+                "Remove": {
+                  "Required": [
+                    "Action",
+                    "TenantName",
+                    "ODSName",
+                    "EdOrgId"
+                  ]
+                }
+              }
+            }
+
+            def lambda_handler(event, context):
+                action, tenant_name, ODSName, ed_org_id, name_of_institution, address_type, city, zip, state_descriptor, address, ed_org_category, sea_id = validate_input(event)
+                global secret_values
+                # Get database conn details from Secrets Manager
+                secret_values = get_secrets(secret_name)
+                host = secret_values['host']
+                name = secret_values['username']
+                password = secret_values['password']
+                
+                #Set up for the conn based on action
+                db_conn = None
+                validate_name(tenant_name, "Tenant")
+                validate_name(ODSName, "ODS")
+                verify_tenant_membership(tenant_name)
+                ods_DB_name = get_ods_DB_name(tenant_name, ODSName)
+                conn_string = (f"host={host} dbname={ods_DB_name} port=5432 user={name} password={password}")
+                
+                if action not in ["Add", "Remove"]:
+                    print("Invalid Action. Please provide ""Add"", or ""Remove"".")
+                    raise ValueError("Invalid Action. Please provide ""Add"" or ""Remove"".")
+                try:
+                    global conn
+                    conn = psycopg2.connect(conn_string)
+
+                    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                    
+                    if action == "Add":
+                        if not check_for_edorg(ed_org_id):
+                            create_ed_org_record(ed_org_id, name_of_institution, ed_org_category)
+                            if address:
+                              create_ed_org_address_record(address_type, city, ed_org_id, zip, state_descriptor, address)
+                            create_ed_org_category_record(ed_org_id, ed_org_category)
+                            create_state_ed_agency_record(ed_org_id, ed_org_category)
+                            create_lea_record(ed_org_id, ed_org_category, sea_id)
+                            create_identification_code_record(ed_org_id, ed_org_category)
+                            print("EdOrg information successfully inserted into ODS.")
+                            return "EdOrg information successfully inserted into ODS."
+                        else:
+                            print(f"EdOrg entry already exists for education organization id: {ed_org_id}")
+                            raise ManagementError(f"EdOrg entry already exists for education organization id: {ed_org_id}")
+                    elif action == "Remove":
+                        if check_for_edorg(ed_org_id):
+                            if check_for_child_agencies(ed_org_id):
+                                print("This education organization has at least one child education organization (school or localeducationagency) that will need to be removed before removal of this education organization.")
+                                raise ManagementError("This education organization has at least one child education organization (school or localeducationagency) that will need to be removed before removal of this education organization.")
+                            remove_ed_org_record(ed_org_id)
+                            print("EdOrg information successfully removed from ODS.")
+                            return "EdOrg information successfully removed from ODS."
+                        else:
+                            print(f"No EdOrg entry exists for education organization id: {ed_org_id}")
+                            raise ManagementError(f"No EdOrg entry exists for education organization id: {ed_org_id}")
+                        return
+                    
+                except ManagementError as e:
+                    raise ManagementError(e)
+                    
+                except Exception as e:
+                    print("Internal Server Error")
+                    print(e)
+                    raise Exception("Internal Server Error.")
+                    
+                finally:
+                    if conn:
+                        conn.close()
+                
+            def get_secrets(secret_name):
+                # Create a Secrets Manager client
+                secrets_manager = boto3.client('secretsmanager')
+
+                # Get the secret value from Secrets Manager
+                secret_value = secrets_manager.get_secret_value(SecretId=secret_name)
+
+                return json.loads(secret_value['SecretString'])
+                
+            def validate_name(name, type_of_validation):
+                if not re.fullmatch("^([a-z,0-9]){1,29}$", name):
+                    print(f"{type_of_validation} names should include only numbers and lowercase letters, be a single word, and have a max length of 29.")
+                    raise ManagementError(f"{type_of_validation} names should include only numbers and lowercase letters, be a single word, and have a max length of 29.")
+                
+            def validate_input(event):
+                action = event.get('Action', None)
+                ODSName = event.get('ODSName', None)
+                tenant_name = event.get('TenantName', None)
+                ed_org_id = event.get('EdOrgId', None)
+                name_of_institution = event.get('NameOfInstitution', None)
+                address_type = event.get('AddressType', None)
+                city = event.get('City', None)
+                zip = event.get('Zip', None)
+                state_descriptor = event.get('State', None)
+                address = event.get('Address', None)
+                ed_org_category = event.get('EdOrgCategory', None)
+                sea_id = event.get('StateEducationAgencyID', None)
+                
+                if action == "Add":
+                    if tenant_name and ODSName and ed_org_id and name_of_institution and ed_org_category:
+                        return action, tenant_name, ODSName, ed_org_id, name_of_institution, address_type, city, zip, state_descriptor, address, ed_org_category, sea_id
+                if action == "Remove":
+                    if tenant_name and ODSName and ed_org_id:
+                        return action, tenant_name, ODSName, ed_org_id, name_of_institution, address_type, city, zip, state_descriptor, address, ed_org_category, sea_id
+                print(f"Required parameters not present for {action} action. Requires: {event_requirements['Action'][action]['Required']}")
+                raise ManagementError(f"Required parameters not present for {action} action. Requires: {event_requirements['Action'][action]['Required']}")
+                
+                
+
+            def get_ods_DB_name(tenant_name, ODSName):
+                output_ods = 'ods_' + tenant_name + "_" + ODSName
+                return output_ods
+                
+            def check_for_edorg(ed_org_id):
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT nameofinstitution FROM edfi.educationorganization where educationorganizationid = %s;", (ed_org_id,) )
+                        result = cur.fetchone()
+                    if result:
+                        return True
+                    return False
+                    
+                except Exception as e:
+                    print("An error occurred when attempting to check if the Education Organization exists.")
+                    print(e)
+                    raise ManagementError("An error occurred when attempting to check if the Education Organization exists.")
+                    
+            def get_desc_id(codevalue, namespace):
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT descriptorid FROM edfi.descriptor WHERE namespace = %s AND codevalue = %s", (namespace, codevalue))
+                        result_set = cur.fetchone()
+                        desc_id = result_set[0]
+                        return desc_id
+                except Exception as e:
+                    print(f"An error occurred when attempting to get the descriptorid for {codevalue} in the {namespace}.")
+                    print(e)
+                    raise ManagementError(f"An error occurred when attempting to get the descriptorid for {codevalue} in the {namespace}.")
+                    
+            def create_ed_org_record(ed_org_id, name_of_institution, ed_org_category):
+                try:
+                    desc = "edfi." + ed_org_category.replace(" ", "")
+                    with conn.cursor() as cur:
+                        cur.execute("INSERT INTO edfi.educationorganization(educationorganizationid, nameofinstitution, discriminator) VALUES (%s, %s, %s);", (ed_org_id, name_of_institution, desc))
+                except Exception as e:
+                    print("An error occurred when attempted to create the EducationOrganization record.")
+                    print(e)
+                    raise ManagementError("An error occurred when attempted to create the EducationOrganizatioAddress record.")
+                    
+            def create_ed_org_address_record(address_type, city, ed_org_id, zip, state_descriptor, address):
+                try:
+                    state_descriptor_id = get_desc_id(state_descriptor, "uri://ed-fi.org/StateAbbreviationDescriptor")
+                    address_type_descriptor_id = get_desc_id(address_type, "uri://ed-fi.org/AddressTypeDescriptor")
+                    with conn.cursor() as cur:
+                        cur.execute("INSERT INTO edfi.educationorganizationaddress(addresstypedescriptorid, city, educationorganizationid, postalcode, stateabbreviationdescriptorid, streetnumbername) VALUES (%s, %s, %s, %s, %s, %s);", (address_type_descriptor_id, city, ed_org_id, zip, state_descriptor_id, address))
+                except Exception as e:
+                    print("An error occurred when attempted to create the EducationOrganizatioAddress record.")
+                    print(e)
+                    raise ManagementError("An error occurred when attempted to create the EducationOrganizatioAddress record.")
+                    
+            def create_ed_org_category_record(ed_org_id, ed_org_category):
+                try:
+                    edorg_category_descriptor_id = get_desc_id(ed_org_category, "uri://ed-fi.org/EducationOrganizationCategoryDescriptor")
+                    with conn.cursor() as cur:
+                        cur.execute("INSERT INTO edfi.educationorganizationcategory(educationorganizationcategorydescriptorid, educationorganizationid) VALUES (%s, %s);", (edorg_category_descriptor_id, ed_org_id))
+                except Exception as e:
+                    print("An error ocurred when attempting to create the EducationOrganizationCategory record.")
+                    print(e)
+                    raise ManagementError("An error ocurred when attempting to create the EducationOrganizationCategory record.")
+                
+            def create_state_ed_agency_record(ed_org_id, ed_org_category):
+                try:
+                    if ed_org_category == "State Education Agency":
+                        with conn.cursor() as cur:
+                            cur.execute("INSERT INTO edfi.stateeducationagency(stateeducationagencyid) VALUES (%s);", (ed_org_id,))
+                except Exception as e:
+                    print("There was an issue creating the StateEducationAgency record.")
+                    print(e)
+                    raise ManagementError("There was an issue creating the StateEducationAgency record.")
+                    
+            def create_lea_record(ed_org_id, ed_org_category, sea_id):
+                if ed_org_category == "Local Education Agency":
+                    try:
+                        local_ed_agency_cat_desc = get_desc_id("Regular public school district", "uri://ed-fi.org/LocalEducationAgencyCategoryDescriptor")
+                        with conn.cursor() as cur:
+                                # Insert LEA record with SEA ID if the current ED Org is not the SEA
+                                if sea_id:
+                                    cur.execute("INSERT INTO edfi.localeducationagency(localeducationagencyid, localeducationagencycategorydescriptorid, stateeducationagencyid) VALUES (%s, %s, %s);", (ed_org_id, local_ed_agency_cat_desc, sea_id))
+                                else:
+                                    # Insert LEA record without SEA ID if no SEA records exist
+                                    cur.execute("INSERT INTO edfi.localeducationagency(localeducationagencyid, localeducationagencycategorydescriptorid) VALUES (%s, %s);", (ed_org_id, local_ed_agency_cat_desc))
+                    except Exception as e:
+                        print("There was a problem creating the LocalEducationAgency record")
+                        print(e)
+                        raise ManagementError("There was a problem creating the LocalEducationAgency record")
+                    
+            def create_identification_code_record(ed_org_id, ed_org_category):
+                match ed_org_category:
+                    case "Local Education Agency":
+                        desc = "LEA"
+                    case "State Education Agency":
+                        desc = "SEA"
+                    case _:
+                        return
+                try:
+                    ed_org_id_system_desc = get_desc_id(desc, "uri://ed-fi.org/EducationOrganizationIdentificationSystemDescriptor")
+                    with conn.cursor() as cur:
+                        cur.execute("INSERT INTO edfi.educationorganizationidentificationcode(educationorganizationid, educationorganizationidentificationsystemdescriptorid, identificationcode) VALUES (%s, %s, %s);", (ed_org_id, ed_org_id_system_desc, ed_org_id))
+                except Exception as e:
+                    print("There was a problem creating the EducationOrganizationIdentificationCode record.")
+                    print(e)
+                    raise ManagementError("There was a problem creating the EducationOrganizationIdentificationCode record.")
+                    
+            def remove_ed_org_record(ed_org_id):
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("DELETE FROM edfi.educationorganization WHERE educationorganizationid = %s;", (ed_org_id,))
+                except Exception as e:
+                    print("There was a problem removing the EducationOrganization record.")
+                    print(e)
+                    raise ManagementError("There was a problem removing the EducationOrganization record.")
+                    
+                    
+            def check_for_child_agencies(ed_org_id):
+                #Checks for child agencies in edfi.localeducationagency and edfi.schools where the localeducationagency is equal to the given ed_org_id
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT count(localeducationagencyid) from edfi.localeducationagency WHERE stateeducationagencyid = %s;", (ed_org_id,))
+                        result_set = cur.fetchone()
+                        child_orgs = int(result_set[0])
+                        cur.execute("SELECT count(schoolid) from edfi.school WHERE localeducationagencyid = %s;", (ed_org_id,))
+                        schools_result = cur.fetchone()
+                        schools_count = int(result_set[0])
+                        child_orgs += schools_count
+                        if child_orgs:
+                            if child_orgs > 0:
+                                return True
+                except Exception as e:
+                    print("There was a problem checking for child entities (Schools, LEAS, etc).")
+                    print(e)
+                    raise ManagementError("There was a problem checking for child entities (Schools, LEAS, etc).")
+                return False
+                
+            def verify_tenant_membership(tenant_name):
+                table_name = env_label + "-tenants"
+                dynamodb = boto3.resource('dynamodb')
+                table = dynamodb.Table(table_name)
+                key = {
+                    'Name': tenant_name
+                    }
+                response = table.get_item(Key=key)
+                if "Item" in response:
+                    return
+                else:
+                    print(f"The there is no tenant with the name {tenant_name} in this environment.")
+                    raise ManagementError(f"The there is no tenant with the name {tenant_name} in this environment.")
+                    
+            class ManagementError(Exception):
+                pass
+
+
+
+  EdOrgManagementVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'EdOrgManagementFunction'
+  'Fn::ForEach::EdOrgManagementPermission':
+    - AccountId
+    - !Ref AdminAccountIds
+    - 'EdOrgManagementPermission${AccountId}':
+        Type: 'AWS::Lambda::Permission'
+        Properties:
+          Action: 'lambda:InvokeFunction'
+          FunctionName: !Ref 'EdOrgManagementFunction'
+          Principal: !Ref AccountId
+  EdOrgManagementRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${EdOrgManagementFunction}'
+      retentionInDays: 365
+
+  SBEMetadataRole:
+    Condition: UseAdminApi
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: 'AllowActionsPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants'
+  
+  SBEMetadataLambdaFunction:
+    Condition: UseAdminApi
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Layers:
+        - !Ref 'PgPlimitLambdaLayer'
+      Description: SBE Metadata provider for SBAA
+      FunctionName: !Sub '${EnvLabel}-SbeMetadata'
+      Role: !GetAtt 'SBEMetadataRole.Arn'
+      ReservedConcurrentExecutions: 1
+      Runtime: nodejs18.x
+      Timeout: 120
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref RDSSecret
+          MODE: !Ref EdFiTenancyMode
+          ENVLABEL: !Ref EnvLabel
+          PARTNER: !Ref Partner
+          DOMAIN_NAME: !Ref DomainName
+          TENANT_RESOURCE_TREE_ARN: !GetAtt 'TenantResourceTreeFunction.Arn'
+          TENENT_MANAGEMENT_ARN: !GetAtt 'TenantManagementFunction.Arn'
+          ODS_MANAGEMENT_ARN: !GetAtt 'ODSManagementFunction.Arn'
+          DATA_FRESHNESS_ARN: !GetAtt 'DataFreshnessFunction.Arn'
+          ED_ORG_MANAGEMENT_ARN: !GetAtt 'EdOrgManagementFunction.Arn'
+      Code:
+        ZipFile: |
+          exports.handler = async function (event) {
+              const sbe = {
+                  envlabel: process.env.ENVLABEL,
+                  mode: process.env.MODE,
+                  domainName: process.env.DOMAIN_NAME,
+                  adminApiUrl: "adminapi." + process.env.DOMAIN_NAME + ":8443",
+                  tenantResourceTreeFunctionArn: process.env.TENANT_RESOURCE_TREE_ARN,
+                  tenantManagementFunctionArn: process.env.TENENT_MANAGEMENT_ARN,
+                  odsManagementFunctionArn: process.env.ODS_MANAGEMENT_ARN,
+                  dataFreshnessFunctionArn: process.env.DATA_FRESHNESS_ARN,
+                  edorgManagementFunctionArn: process.env.ED_ORG_MANAGEMENT_ARN
+              };
+              return sbe;
+          };
+  SBEMetadataLambdaVersion:
+    Condition: UseAdminApi
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'SBEMetadataLambdaFunction'
+  'Fn::ForEach::SBEMetadataLambdaPermission':
+    - AccountId
+    - !Ref AdminAccountIds
+    - 'SBEMetadataLambdaPermission${AccountId}':
+        Type: 'AWS::Lambda::Permission'
+        Condition: UseAdminApi
+        Properties:
+          Action: 'lambda:InvokeFunction'
+          FunctionName: !Ref 'SBEMetadataLambdaFunction'
+          Principal: !Ref AccountId
+  SBEMetadataRetention:
+    Condition: UseAdminApi
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${SBEMetadataLambdaFunction}'
+      retentionInDays: 365
+
+  TenantResourceTreeRole:
+    Condition: UseAdminApi
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: 'AllowActionsPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants'
+  
+  TenantResourceTreeFunction:
+    Condition: UseAdminApi
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Layers:
+        - !Ref 'PgPlimitLambdaLayer'
+      Description: Provides tree structure of resources in a tenant for SBAA
+      FunctionName: !Sub '${EnvLabel}-TenantResourceTree'
+      Role: !GetAtt 'TenantResourceTreeRole.Arn'
+      ReservedConcurrentExecutions: 1
+      Runtime: nodejs18.x
+      Timeout: 120
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref RDSSecret
+          MODE: !Ref EdFiTenancyMode
+          ENVLABEL: !Ref EnvLabel
+         
+      # This code must be an ES6 module, with file extension .mjs
+      # There is currently no way to use inline code to deploy an ES6 module.
+      # NOTE! Changes to the code in S3 will not be detected automatically.
+      #       Modify the version number on the zip file to trigger an update.
+      Code:
+        S3Bucket: !Ref 'S3BucketSourceCode'
+        S3Key: !Sub '${S3KeySourceCode}/TenantResourceTreeFunction-v2.zip'
+  TenantResourceTreeVersion:
+    Condition: UseAdminApi
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'TenantResourceTreeFunction'
+  'Fn::ForEach::TenantResourceTreePermission':
+    - AccountId
+    - !Ref AdminAccountIds
+    - 'TenantResourceTreePermission${AccountId}':
+        Type: 'AWS::Lambda::Permission'
+        Condition: UseAdminApi
+        Properties:
+          Action: 'lambda:InvokeFunction'
+          FunctionName: !Ref 'TenantResourceTreeFunction'
+          Principal: !Ref AccountId
+  TenantResourceTreeRetention:
+    Condition: UseAdminApi
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${TenantResourceTreeFunction}'
+      retentionInDays: 365
+
+  DataFreshnessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvLabel}-Data-Freshness-Role'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: 'AllowActionsPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
+  DataFreshnessFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Will get Data Freshness JSON for SBAA
+      Handler: index.lambda_handler
+      Layers: 
+        - !Ref 'PsycopgLambdaLayer'
+      FunctionName: !Sub '${EnvLabel}-DataFreshnessJson'
+      Role: !GetAtt 'DataFreshnessRole.Arn'
+      Timeout: 120
+      MemorySize: 128
+      Environment:
+        Variables:
+          ENVLABEL: !Ref EnvLabel
+      Runtime: python3.11
+      ReservedConcurrentExecutions: 1
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Code:
+        ZipFile: |
+          # This script queries the ODS and surfaces the row counts for ODS tables
+          # It is used to determine the freshness of the data in the ODS and generates a JSON used by SBAA
+          import boto3
+          import json
+          import os
+          import psycopg2 as pg
+
+          # Get global variables
+          REGION = os.environ["AWS_REGION"]
+          ENVLABEL = os.environ["ENVLABEL"]
+
+          session = boto3.session.Session()
+          sec_client = session.client("secretsmanager", region_name=REGION)
+          get_sec_value_response = sec_client.get_secret_value(
+              SecretId="{}-AuroraMasterSecret".format(ENVLABEL)
+          )
+
+          def lambda_handler(event, context):
+              secret_string = json.loads(get_sec_value_response["SecretString"])
+              db_pass = secret_string["password"]
+              host = secret_string["host"]
+              username = secret_string["username"]
+              ods_db_name = 'ods_'+ event['Tenant'] + '_' + event['ODS']
+              data = getOdsData(ods_db_name, host, username, db_pass)
+              json_data = json.dumps(data)
+              return json_data
+
+          # Function will execute SQL query and return results
+          def sqlQuery(host, dbname, username, db_pass, query):
+              try:
+                  conn_string = f'host={host} dbname={dbname} port=5432 user={username} password={db_pass}'
+              except pg.Error as e:
+                  return print(e, "ERROR: Unexpected error: Could not connect to psql instance.")
+
+              connection = pg.connect(conn_string)
+              with connection.cursor() as cur:
+                  cur.execute(query)
+                  resp = cur.fetchall()
+                  cur.close()
+              connection.close()
+              return resp
+
+          # Function will return row counts for each table in the ODS
+          def getOdsData(ods_db_name, host, username, db_pass):
+              print(ods_db_name)
+
+              overallRecordCount = '''select t.table_schema, 
+                                      t.table_name, 
+                                      (xpath('/row/cnt/text()', xml_count))[1]::text::int as row_count,
+                                      (xpath('/row/mincd/text()', xml_cd))[1]::text as min_cd,
+                                      (xpath('/row/maxcd/text()', xml_cd))[1]::text as max_cd,
+                                      (xpath('/row/maxlmd/text()', xml_lmd))[1]::text as max_lmd
+                                  from (
+                                  select table_name, table_schema, 
+                                          query_to_xml(format('select count(*) as cnt from %I.%I', table_schema, table_name), false, true, '') as xml_count
+                                  from information_schema.tables
+                                  where table_schema in ('edfi', 'tpdm', 'edfixassessmentroster', 'tx', 'idoe')
+                                  and table_catalog = '{ods_db_name}'
+                                  and table_name not like '%descriptor'
+                                  ) t
+                                  left join (
+                                  select table_name, table_schema,
+                                      query_to_xml(format('select min(createdate) as mincd, max(createdate) as maxcd from %I.%I', table_schema, table_name), false, true, '') as xml_cd
+                                  from information_schema.columns
+                                  where column_name ='createdate'
+                                  and table_schema in ('edfi', 'tpdm', 'edfixassessmentroster', 'tx', 'idoe')
+                                  and table_catalog = '{ods_db_name}'
+                                  and table_name not like '%descriptor'
+                                  ) cd 
+                                  on t.table_name = cd.table_name
+                                  and t.table_schema = cd.table_schema
+                                  left join (
+                                  select table_name, table_schema,
+                                      query_to_xml(format('select max(lastmodifieddate) as maxlmd from %I.%I', table_schema, table_name), false, true, '') as xml_lmd
+                                  from information_schema.columns
+                                  where column_name ='lastmodifieddate'
+                                  and table_schema in ('edfi', 'tpdm', 'edfixassessmentroster', 'tx', 'idoe')
+                                  and table_catalog = '{ods_db_name}'
+                                  and table_name not like '%descriptor'
+                                  ) lmd 
+                                  on t.table_name = lmd.table_name
+                                  and t.table_schema = lmd.table_schema'''
+
+              # Capture data across all the ODS tables
+              results = sqlQuery(
+                  host,
+                  ods_db_name,
+                  username,
+                  db_pass,
+                  overallRecordCount.format(
+                      ods_db_name=ods_db_name,
+                  )
+              )
+              # Build data set for ODS tables
+              data = []
+              for row in results:
+                  rowData = {}
+                  rowData["Schema"] = row[0]
+                  rowData["Table"] = row[1]
+                  rowData["RecordCount"] = row[2]
+                  rowData["FirstCreated"] = row[3]
+                  rowData["LastCreated"] = row[4]
+                  rowData["LastUpdated"] = row[5]
+                  data.append(rowData)
+              return data
+  DataFreshnessVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'DataFreshnessFunction'
+  'Fn::ForEach::DataFreshnessPermission':
+    - AccountId
+    - !Ref AdminAccountIds
+    - 'DataFreshnessPermission${AccountId}':
+        Type: 'AWS::Lambda::Permission'
+        Properties:
+          Action: 'lambda:InvokeFunction'
+          FunctionName: !Ref 'DataFreshnessFunction'
+          Principal: !Ref AccountId
+  DataFreshnessRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${DataFreshnessFunction}'
+      retentionInDays: 365
+
+  East1AlarmRole:
+    Condition: EnableHealthCheck
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${EnvLabel}-East1Alarm-Role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: 'AllowActions'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:DeleteAlarms
+                Resource: '*'
+  East1AlarmFunction:
+    Condition: EnableHealthCheck
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Layers:
+        - !Ref 'CRHelperLambdaLayer'
+      Description: Creates a Route53 Healthcheck Alarm in us-east-1
+      FunctionName: !Sub '${EnvLabel}-East1Alarm'
+      Role: !GetAtt 'East1AlarmRole.Arn'
+      Runtime: python3.11
+      Timeout: 120
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaDefaultSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Code:
+        ZipFile: |
+          import boto3
+          import time
+          import signal
+          from botocore.config import Config
+          from crhelper import CfnResource
+
+          helper = CfnResource()
+          us_east_1 = Config(
+                  region_name = 'us-east-1'
+              )
+
+          def lambda_handler(event, context):
+              signal.alarm(int((context.get_remaining_time_in_millis() / 1000) - 1))
+              helper(event, context)
+
+          @helper.create
+          def create(event, _):   
+              env_label = event['ResourceProperties']['EnvLabel']
+              sns_arn = event['ResourceProperties']['SNSTopicArn']
+              health_check = event['ResourceProperties']['Route53HealthCheck']
+              alarm_label = event['ResourceProperties']['AlarmLabel']
+              alarm_name = f"{env_label}-{alarm_label}-HealthCheck-Alarm"
+
+              if check_for_alarm(alarm_name):
+                print("Alarm already exists")
+              else:
+                create_alarm(sns_arn, health_check, alarm_name)
+
+          @helper.update
+          def update(event, context):
+              env_label = event['ResourceProperties']['EnvLabel']
+              sns_arn = event['ResourceProperties']['SNSTopicArn']
+              health_check = event['ResourceProperties']['Route53HealthCheck']
+              alarm_label = event['ResourceProperties']['AlarmLabel']
+              alarm_name = f"{env_label}-{alarm_label}-HealthCheck-Alarm"
+              create_alarm(sns_arn, health_check, alarm_name)
+
+          @helper.delete
+          def delete(event, _):
+              env_label = event['ResourceProperties']['EnvLabel']
+              alarm_label = event['ResourceProperties']['AlarmLabel']
+              alarm_name = f"{env_label}-{alarm_label}-HealthCheck-Alarm"
+              if check_for_alarm(alarm_name):
+                client = boto3.client('cloudwatch', config=us_east_1)
+                client.delete_alarms(AlarmNames=[alarm_name])
+
+          def create_alarm(sns_arn, health_check, alarm_name):
+              client = boto3.client('cloudwatch', config=us_east_1)
+              client.put_metric_alarm(
+                  AlarmName=alarm_name,
+                  ActionsEnabled=True,
+                  AlarmActions=[sns_arn],
+                  AlarmDescription='Route53_HealthCheck',
+                  Dimensions=[
+                      {
+                        'Name': 'HealthCheckId',
+                        'Value': health_check
+                      },
+                  ],
+                  MetricName='HealthCheckStatus',
+                  Statistic='Minimum',
+                  Namespace='AWS/Route53',
+                  Threshold=1,
+                  ComparisonOperator='LessThanThreshold',
+                  Period=60,
+                  DatapointsToAlarm=1,
+                  EvaluationPeriods=1
+              )
+
+          def check_for_alarm(alarm_name):
+              client = boto3.client('cloudwatch', config=us_east_1)
+              response=client.describe_alarms(AlarmNames=[alarm_name])
+              if response['MetricAlarms']:
+                  print(response['MetricAlarms'])
+                  return True
+              return False
+  East1AlarmFunctionVersion:
+    Condition: EnableHealthCheck
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'East1AlarmFunction'
+  East1AlarmRetention:
+    Condition: EnableHealthCheck
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${East1AlarmFunction}'
+      retentionInDays: 365
+  
+  ODSDerivativesLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${EnvLabel}-lambda-ods-derivatives-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
+                  - !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+              - Effect: Allow
+                Action: ssm:DescribeParameters
+                Resource: '*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: '*'
+  ODSDerivativesLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Layers:
+        - !Ref 'PsycopgLambdaLayer'
+        - !Ref 'PycryptodomeLambdaLayer'
+        - !Ref 'CRHelperLambdaLayer'
+      Description: CloudFormation Custom Resource provider. Adds/removes ODS instance derivative in admin db when ODS instance derivative is created/deleted.
+      FunctionName: !Sub '${EnvLabel}-ODSDerivatives'
+      Role: !GetAtt 'ODSDerivativesLambdaRole.Arn'
+      ReservedConcurrentExecutions: 1
+      Runtime: python3.11
+      Timeout: 480
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          ENVLABEL: !Ref EnvLabel
+          CONNECTION_IDLE: !Ref WebAPIConnectionIdleLifetime
+          MAXIMUM_POOL_SIZE: !Ref WebAPIMaxPoolSize
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import boto3
+          import signal
+          from crhelper import CfnResource
+          import psycopg2
+          from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+          from Crypto.Cipher import AES
+          from Crypto.Util.Padding import pad
+          from Crypto.Hash import HMAC, SHA256
+          import base64
+          import re
+
+          env_label = os.environ['ENVLABEL']
+          connection_idle = os.environ['CONNECTION_IDLE']
+          maximum_pool_size = os.environ['MAXIMUM_POOL_SIZE']
+
+          helper = CfnResource()
+
+          def lambda_handler(event,context):
+              signal.alarm(int((context.get_remaining_time_in_millis() / 1000) - 1))
+              helper(event, context)
+          
+          @helper.create
+          def create(event, _): 
+              derivative_type = event['ResourceProperties']['DerivativeType']
+              secret_arn  = event['ResourceProperties']['SecretArn']
+              global secret
+              secret = get_secret_from_secrets_manager(secret_arn)
+              host = secret['host']
+              username = secret['username']
+              password = secret['password']
+
+              # Loop through tenants and add read replica for each ODS
+              data = get_tenants()
+              for item in data:
+                  tenant_name = item['Name']
+                  print(tenant_name)
+                  db_conn = "admin_" + tenant_name
+                  conn_string = (f"host={host} dbname={db_conn} port=5432 user={username} password={password}")
+                  try:
+                      global conn
+                      conn = psycopg2.connect(conn_string)
+                      conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                      # Get list of odsinstances
+                      odsinstances = get_ods_instances(tenant_name)
+                      for ods in odsinstances:
+                          ods_id = ods[0]
+                          ods_DB_name = "ods_" + tenant_name + "_" + ods[1]
+                          print(ods_DB_name)
+                          # Encrypt connection string
+                          encrypted_ods_reader_connection_string = encrypt_derivative_connection_string(ods_DB_name, derivative_type)
+                          # Add derivative to odsinstancederivative table
+                          add_odsinstancederivatives(ods_id, encrypted_ods_reader_connection_string, derivative_type)
+                  except psycopg2.Error as e:
+                      print(e)
+                      raise(e)
+                      return {
+                          'statusCode': 500,
+                          'body': json.dumps({'error': 'SQL Error: ' + str(e)})
+                      }
+                  finally:
+                      # Close the Aurora connection in the finally block to ensure it's always closed
+                      if conn:
+                          conn.close()
+
+                  
+          @helper.delete
+          def delete(event, _): 
+              derivative_type = event['ResourceProperties']['DerivativeType']
+              secret_arn  = event['ResourceProperties']['SecretArn']
+              global secret
+              secret = get_secret_from_secrets_manager(secret_arn)
+              host = secret['host']
+              username = secret['username']
+              password = secret['password']
+
+              # Loop through tenants and remove read replica
+              data = get_tenants()
+              for item in data:
+                  tenant_name = item['Name']
+                  print(tenant_name)
+                  db_conn = "admin_" + tenant_name
+                  conn_string = (f"host={host} dbname={db_conn} port=5432 user={username} password={password}")
+                  try:
+                      global conn
+                      conn = psycopg2.connect(conn_string)
+                      conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                      remove_odsinstancederivatives(derivative_type)
+                  except psycopg2.Error as e:
+                      print(e)
+                      raise(e)
+                      return {
+                          'statusCode': 500,
+                          'body': json.dumps({'error': 'SQL Error: ' + str(e)})
+                      }
+                  finally:
+                      # Close the Aurora connection in the finally block to ensure it's always closed
+                      if conn:
+                          conn.close()
+              
+
+          def get_secret_from_secrets_manager(secret_arn):
+              '''Get the secret from Secrets Manager'''
+              client = boto3.client('secretsmanager')
+              get_secret_value_response = client.get_secret_value(SecretId=secret_arn)
+              return json.loads(get_secret_value_response['SecretString'])
+              
+          def get_ods_instances(tenant_name):
+              '''Return a list of ODSs for given tenant'''
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"select odsinstanceid, name from dbo.odsinstances;")
+                      results = cursor.fetchall()
+                      return results
+              except psycopg2.Error as e:
+                  raise Exception(f"Encountered an error while attempting to retrieve ODSs for the {tenant_name} tenant.", e)
+              return
+
+          def get_tenants():
+              # Concatenate "-tenants" to env_label for the DynamoDB table name
+              dynamodb_table_name = env_label + '-tenants'
+              # Create the DynamoDB client with the concatenated table name
+              dynamodb = boto3.resource('dynamodb')
+              dynamodb_table = dynamodb.Table(dynamodb_table_name)
+              # Scan the DynamoDB table to retrieve all items
+              response = dynamodb_table.scan()
+              data = response['Items']
+              # Handle pagination for large tables.
+              while response.get('LastEvaluatedKey'):
+                  response = dynamodb_table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+                  data.extend(response['Items'])
+              return data
+
+          def encrypt_derivative_connection_string(ods_DB_name, derivative_type):
+              host = secret['host']
+              if(derivative_type == "Snapshot"):
+                host = re.sub(r'^[^.]*', f'clone-{env_label}', host)
+              elif(derivative_type == "ReadReplica"):
+                host = host.replace('.cluster-', '.cluster-ro-')
+              name = secret['username']
+              password = secret['password']
+              connectionstring = (f"host={host}; database={ods_DB_name}; port=5432; username={name}; password={password}; Application Name=EdFi.Ods.WebApi; SSL Mode=Require; Trust Server Certificate=true; Maximum Pool Size={os.environ['MAXIMUM_POOL_SIZE']}; Connection Idle Lifetime={os.environ['CONNECTION_IDLE']};")
+              client = boto3.client('secretsmanager')
+              response = client.get_secret_value(SecretId=f'{env_label}-WebApiSecret')
+              base64_key = response['SecretString']
+              key = base64.b64decode(base64_key)
+              cipher = AES.new(key, AES.MODE_CBC)
+              ciphertext = cipher.encrypt(pad(connectionstring.encode(), cipher.block_size))
+              h = HMAC.new(key, digestmod=SHA256)
+              h.update(ciphertext)
+              b64ciphertext = base64.b64encode(ciphertext).decode('utf-8')
+              b64iv = base64.b64encode(cipher.iv).decode('utf-8')
+              b64signature = base64.b64encode(h.digest()).decode('utf-8')
+              return (f"{b64iv}|{b64ciphertext}|{b64signature}")
+
+          def add_odsinstancederivatives(ods_id, connectionstring, derivative_type):
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"insert into dbo.odsinstancederivatives(odsinstance_odsinstanceid, derivativetype, connectionstring) values ('{ods_id}', '{derivative_type}', '{connectionstring}');")
+              except psycopg2.Error as e:
+                  raise Exception(f"Encountered an error while attempting to add the {derivative_type} to the odsinstancederivatives table.", e)
+              return
+
+          def remove_odsinstancederivatives(derivative_type):
+              try:
+                  with conn.cursor() as cursor:
+                      cursor.execute(f"delete from dbo.odsinstancederivatives where derivativetype = '{derivative_type}';")
+              except psycopg2.Error as e:
+                  raise Exception(f"Encountered an error while attempting to remove the {derivative_type} from the odsinstancederivatives table.", e)
+              return
+     
+          @helper.update
+          def no_op(_, __):
+              pass
+            
+          def timeout_handler(_signal, _frame):
+              '''Handle SIGALRM'''
+              raise Exception('Time exceeded')
+
+          signal.signal(signal.SIGALRM, timeout_handler)  
+  ODSDerivativesLambdaVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'ODSDerivativesLambdaFunction'
+  ODSDerivativesLambdaRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${ODSDerivativesLambdaFunction}'
+      retentionInDays: 365
+
+  ODSUserPermissionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${EnvLabel}-lambda-ods-user-permissions'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: 
+                  - !Ref RDSSecret
+  ODSUserPermissionsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Role: !GetAtt 'ODSUserPermissionsRole.Arn'
+      Layers:
+        - !Ref 'PsycopgLambdaLayer'
+      Timeout: 30
+      ReservedConcurrentExecutions: 1
+      Handler: index.lambda_handler
+      Description: Grants permissions to users in the ODS.
+      FunctionName: !Sub '${EnvLabel}-ODSUserPermissions'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          ENVLABEL: !Ref EnvLabel
+      Code:
+        ZipFile: |
+          import json
+          import psycopg2
+          import re
+          import os
+          import boto3
+          from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+
+          #The event_requirements object is used to return a useful error about the requirements of each action back to the user. This could also be expanded later for a 'Help' action or something like that.
+          #If in the future an action is added/modified this object will need to be edited/updated. 
+          #As it exists now there are Action objects with a Required object that returns each variable required in the event JSON object when called on that object.
+
+          event_requirements = {
+            "Action": {
+              "AddUsers": {
+                "Required": [
+                  "Action",
+                  "UserList",
+                  "GroupName"
+                ]
+              },
+              "RemoveUsers": {
+                "Required": [
+                  "Action",
+                  "UserList",
+                  "GroupName"
+                ]
+              },
+              "GrantPermissions": {
+                "Required": [
+                  "Action",
+                  "GroupName",
+                  "DatabaseList",
+                  "SchemaList"
+              ]
+              },
+              "RevokePermissions": {
+                "Required": [
+                  "Action",
+                  "GroupName",
+                  "DatabaseList",
+                  "SchemaList"
+                ]
+              }
+            }
+          }
+
+          def lambda_handler(event, context):
+              # Validate the input and return errors based on above event_requirements JSON
+              action, user_list, group_name, db_list, schema_list = validate_input(event)
+
+              # Get database connection details from Secrets Manager
+              secret_name = os.environ['ENVLABEL'] + '-AuroraMasterSecret'
+              global secret_values
+              secret_values = get_secrets(secret_name)
+              host = secret_values['host']
+              name = secret_values['username']
+              password = secret_values['password']
+              
+              if action == "AddUsers":
+                  add_users_to_group = manage_users_query("ADD", user_list, group_name)
+                  # Execute add users query in the postgres database
+                  postgres_conn_string = (f"host={host} dbname=postgres port=5432 user={name} password={password}")
+                  execute_query(postgres_conn_string, add_users_to_group)
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(f"Users {user_list} successfully added to group {group_name}.")
+                  }
+              elif action == "RemoveUsers":
+                  remove_users_from_group = manage_users_query("DROP", user_list, group_name)
+                  # Execute remove users query in the postgres database
+                  postgres_conn_string = (f"host={host} dbname=postgres port=5432 user={name} password={password}")
+                  execute_query(postgres_conn_string, remove_users_from_group)
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(f"Users {user_list} successfully removed from group {group_name}.")
+                  }
+              elif action == "GrantPermissions":
+                  grant_schema_permissions = schema_permissions_query("GRANT", "TO", group_name, schema_list)
+                  update_group_permissions(db_list, grant_schema_permissions)
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(f"Read-only permissions successfully granted to group {group_name}.")
+                  }
+              elif action == "RevokePermissions":
+                  revoke_schema_permissions = schema_permissions_query("REVOKE", "FROM", group_name, schema_list)
+                  update_group_permissions(db_list, revoke_schema_permissions)
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps(f"Read-only permissions successfully revoked from group {group_name}.")
+                  }
+
+          def update_group_permissions(db_list, query):
+              host = secret_values['host']
+              name = secret_values['username']
+              password = secret_values['password']
+              for db_name in db_list:
+                  # Execute schema permissions in the database
+                  conn_string = (f"host={host} dbname={db_name} port=5432 user={name} password={password}")
+                  execute_query(conn_string, query)
+                  
+          def validate_name(name):
+              if not re.fullmatch("^[a-zA-Z_]\w{,62}$", name):
+                  raise Exception(f"Invalid name {name}. Names must begin with a letter or underscore. Subsequent characters can be letters, digits, or underscores. Max length is 31.")
+
+          def validate_input(event):
+              # Get request details from event
+              action = event.get('Action', None)
+              user_list = event.get('UserList', None)
+              group_name = event.get('GroupName', None)
+              db_list = event.get('DatabaseList', None)
+              schema_list = event.get('SchemaList', None)
+              
+              # Validate input types and characters
+              if user_list:
+                  if not isinstance(user_list, list):
+                      raise Exception("UserList parameter must be a list.")
+                  for user in user_list:
+                      validate_name(user)
+              if group_name:
+                  if not isinstance(group_name, str):
+                      raise Exception("GroupName parameter must be a string.")
+                  validate_name(group_name)
+              if db_list:
+                  if not isinstance(db_list, list):
+                      raise Exception("DatabaseList parameter must be a list.")
+                  for dbname in db_list:
+                      validate_name(dbname)
+              if schema_list:
+                  if not isinstance(schema_list, list):
+                      raise Exception("SchemaList parameter must be a list.")
+                  for schema in schema_list:
+                      validate_name(schema)
+              
+              # Validate necessary input for provided action
+              if action in ("AddUsers", "RemoveUsers"):
+                  if user_list and group_name:
+                      return action, user_list, group_name, None, None
+              if action in ("GrantPermissions", "RevokePermissions"):
+                  if group_name and db_list and schema_list:
+                      return action, None, group_name, db_list, schema_list
+              if action not in ("AddUsers", "RemoveUsers", "GrantPermissions", "RevokePermissions"):
+                  raise Exception(f"Action {action} not found. Available actions are: AddUsers, RemoveUsers, GrantPermissions, RevokePermissions")
+              raise Exception(f"Required parameters not present for {action} action. Requires: {event_requirements['Action'][action]['Required']}")
+
+          def get_secrets(secret_name):
+              secrets_manager = boto3.client('secretsmanager')
+              secret_value = secrets_manager.get_secret_value(SecretId=secret_name)
+              return json.loads(secret_value['SecretString'])
+              
+          def manage_users_query(action, user_list, group_name):
+              query = ""
+              for user in user_list:
+                  query += f"ALTER GROUP {group_name} {action} USER {user};"
+              return query
+
+          def schema_permissions_query(action, direction, group_name, schema_list):
+              query = ""
+              for schema in schema_list:
+                  query += f"{action} USAGE ON SCHEMA {schema} {direction} {group_name};{action} SELECT ON ALL TABLES IN SCHEMA {schema} {direction} {group_name};"
+              return query
+
+          def execute_query(conn_string, query):
+              try:
+                  conn = psycopg2.connect(conn_string)
+                  conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                  with conn.cursor() as cursor:
+                      cursor.execute(query)
+              except psycopg2.Error as e:
+                  raise Exception("Error while attempting to change permissions.", e)
+              finally:
+                  # Close the  connection
+                  if conn:
+                      conn.close()
+  ODSUserPermissionsVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'ODSUserPermissionsFunction'
+  ODSUserPermissionsRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${ODSUserPermissionsFunction}'
+      retentionInDays: 365
+
+  ChangeVersionFunctionRole:
+    Condition: UsePublisher
+    Type: AWS::IAM::Role
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: AllowActions
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
+
+  ChangeVersionFunctionLambdaFunction:
+    Condition: UsePublisher
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Layers:
+        - !Ref 'PsycopgLambdaLayer'
+      Description: Lambda Function to replace the getmaxchangeversion ODS function
+      FunctionName: !Sub '${EnvLabel}-API-Publisher-getmaxchangeversion'
+      Role: !GetAtt 'ChangeVersionFunctionRole.Arn'
+      Runtime: python3.11
+      Timeout: 120
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref RDSSecret
+          ENVLABEL: !Ref EnvLabel
+      Code:
+        ZipFile: |
+          import os
+          import re
+          import json
+          import boto3
+          import psycopg2 as pg
+
+          def lambda_handler(event, context):
+              
+              secret_arn  = os.environ['SECRET_ARN']
+              secret      = get_secret_from_secrets_manager(secret_arn)
+
+              get_max_change_version_function = """create or replace function changes.getmaxchangeversion()
+                  returns bigint
+                  language plpgsql
+                  as
+                  $function$
+                  declare 
+                    t record;
+                    max_cv bigint := 1;
+                    cv bigint;
+                  begin
+                    for t in 
+                      SELECT table_schema, table_name FROM information_schema."columns" 
+                        WHERE column_name ='changeversion'
+                    loop 
+                      execute 'select max(changeversion) from '
+                          || quote_ident(t.table_schema) || '.' 
+                          || quote_ident(t.table_name) into cv;
+                      if cv > max_cv then
+                        max_cv := cv;
+                      end if;
+                    end loop;
+                    return max_cv;
+                  end;
+                  $function$"""
+              
+              databases = toList(sqlQuery('postgres', "select datname from pg_database where datname like 'ods_%';", 'all', secret))
+              for db in databases:
+                  print(db)
+                  update_cv_function = sqlQuery(db, get_max_change_version_function, 'insert', secret)
+                  # print(update_cv_function)
+                  
+              return event
+
+
+          def sqlQuery(dbname, query, fetchType, secret):
+              envlabel    = os.environ['ENVLABEL']
+              server      = re.sub(r'^[^.]*', f'clone-{envlabel}', secret['host'])
+              username    = secret['username']
+              password    = secret['password']
+              
+              try:
+                  conn_string = f"host={server} dbname={dbname} port=5432 user={username} password={password} sslmode='require'"
+                  connection = pg.connect(conn_string)
+              except pg.Error as e:
+                  return print(e, "ERROR: Unexpected error: Could not connect to psql instance.")
+
+              with connection.cursor() as cur:
+                  cur.execute(query)
+                  if fetchType == "one":
+                      resp = cur.fetchone()
+                  if fetchType == "all":
+                      resp = cur.fetchall()
+                  if fetchType == "insert":
+                      connection.commit()
+                      resp = False
+                  cur.close()
+              return resp
+              
+          def toList(sqlTable):
+              list = []
+              for i in sqlTable:
+                  list.append(i[0])
+              return list
+              
+          def get_secret_from_secrets_manager(secret_arn):
+              '''Get the secret from Secrets Manager'''
+              client = boto3.client('secretsmanager')
+              get_secret_value_response = client.get_secret_value(SecretId=secret_arn)
+              return json.loads(get_secret_value_response['SecretString'])
+  ChangeVersionFunctionLambdaVersion:
+    Condition: UsePublisher
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'ChangeVersionFunctionLambdaFunction'
+  ChangeVersionFunctionLambdaRetention:
+    Condition: UsePublisher
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${ChangeVersionFunctionLambdaFunction}'
+      retentionInDays: 365
+
+Outputs:
+  DatabaseRestoreLambdaFunctionName:
+    Description: Lambda Function Name to handle database restore operations.
+    Value: !Ref 'DatabaseRestoreLambdaFunction'
+  DatabaseRestoreIamRoleName:
+    Description: IAM Role name for the Database Restore Lambda Function
+    Value: !Ref 'DatabaseRestoreRole'
+  SnsToSlackLambdaArn:
+    Condition: EnableSlackNotifications
+    Description: ARN for the SNS to Slack Lambda Function
+    Value: !GetAtt 'SNSToSlackFunction.Arn'
+  CRHelperLambdaLayer:
+    Value: !Ref 'CRHelperLambdaLayer'
+    Description: Reference to the Custom Resource Helper Lambda Layer
+  SetCloudWatchRetentionFunctionArn:
+    Value: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+    Description: Arn of the fuction to set CloudWatch log group retention
+  BeanstalkUploadAndDeployFunctionArn:
+    Value: !GetAtt 'BeanstalkUploadAndDeployLambdaFunction.Arn'
+    Description: Arn of the fuction to upload and deploy applications to beanstalk
+  SBEMetadataLambdaFunctionName:
+    Condition: UseAdminApi
+    Description: Lambda Function Name to handle database restore operations.
+    Value: !Ref 'SBEMetadataLambdaFunction'
+  SBEMetadataIamRoleName:
+    Condition: UseAdminApi
+    Description: IAM Role name for the Database Restore Lambda Function
+    Value: !Ref 'SBEMetadataRole'
+  SBEMetadataLambdaArn:
+    Condition: UseAdminApi
+    Description: Lambda ARN for SBE Meatadata Function
+    Value: !GetAtt 'SBEMetadataLambdaFunction.Arn'
+  East1AlarmLambdaArn:
+    Condition: EnableHealthCheck
+    Description: ARN for the East1 Alarm Function
+    Value: !GetAtt 'East1AlarmFunction.Arn'
+  ODSDerivativesLambdaArn:
+    Description: Lambda ARN for ODS Derivatives Function
+    Value: !GetAtt 'ODSDerivativesLambdaFunction.Arn'
+  ChangeVersionLambdaArn:
+    Condition: UsePublisher
+    Description: Lambda ARN for ChangeVersion Function
+    Value: !GetAtt 'ChangeVersionFunctionLambdaFunction.Arn'

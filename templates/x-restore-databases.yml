@@ -1,0 +1,229 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Uses Custom Resources to restore SQL files to the RDS database.
+Parameters:
+  RDSSecret:
+    Type: String
+  EdFiTenancyMode:
+    Description: The tenancy mode that Ed-Fi will run in.
+    AllowedValues:
+      - 'SingleTenant'
+      - 'MultiTenant'
+    Default: 'SingleTenant'
+    Type: String
+  RestoreMinimalDB:
+    Type: String
+    Default: 'yes'
+    AllowedValues:
+      - 'yes'
+      - 'no'
+  RestorePopulatedDB:
+    Type: String
+    Default: 'no'
+    AllowedValues:
+      - 'yes'
+      - 'no'
+  S3SourceBucket:
+    Type: String
+  S3SourceKeyName:
+    Type: String
+    Default: database
+  AdminDbS3Name:
+    Type: String
+  AdminApiDbS3Name:
+    Type: String
+  SecurityDbS3Name:
+    Type: String
+  MinimalDbS3Name:
+    Type: String
+  PopulatedDbS3Name:
+    Type: String
+  LambdaFunctionName:
+    Type: String
+    Default: edfi-ods-lambda-db-restore
+  ODSDerivativesLambdaArn:
+    Type: String
+    Description: ARN of the ODS Derivatives Lambda Function
+  DeployReplica:
+    Description: Deploy Read Replica
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+  APIPublisher:
+    Description: Deploy resources for API Publisher
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+
+Conditions:
+  SingleTenancy: !Equals 
+    - !Ref EdFiTenancyMode
+    - SingleTenant
+  RestoreTheMinimalDB: !And
+    - !Condition SingleTenancy
+    - !Equals
+      - !Ref 'RestoreMinimalDB'
+      - 'yes'
+  RestoreThePopulatedDB: !And
+    - !Condition SingleTenancy
+    - !Equals
+      - !Ref 'RestorePopulatedDB'
+      - 'yes'
+  UseReplica: !Equals [!Ref DeployReplica, 'true']
+  UsePublisher: !Equals [!Ref APIPublisher, 'true']
+
+Resources:
+  PostgresDBRestoreAdminDefault:
+    Condition: SingleTenancy
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${AdminDbS3Name}.sql'
+      Database: admin_default
+      SecretArn: !Ref RDSSecret
+      Template: false
+  
+  PostgresDBRestoreAdminApiDefault:
+    Condition: SingleTenancy
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    DependsOn: PostgresDBRestoreAdminDefault
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${AdminApiDbS3Name}.sql'
+      Database: admin_default
+      SecretArn: !Ref RDSSecret
+      Template: false
+
+  PostgresDBRestoreAdminTemplate:
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${AdminDbS3Name}.sql'
+      Database: admin_template
+      SecretArn: !Ref RDSSecret
+      Template: false # Must be false to allow Admin API to restore.
+  
+  PostgresDBRestoreAdminApiTemplate:
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    DependsOn: PostgresDBRestoreAdminTemplate
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${AdminApiDbS3Name}.sql'
+      Database: admin_template
+      SecretArn: !Ref RDSSecret
+      Template: true # This is the last script writing to the admin_template database
+  
+
+  PostgresDBRestoreMinimalDefault:
+    Condition: RestoreTheMinimalDB
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${MinimalDbS3Name}.sql'
+      Database: ods_default_default
+      SecretArn: !Ref RDSSecret
+      Template: false
+
+  PostgresDBRestoreMinimalTemplate:
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${MinimalDbS3Name}.sql'
+      Database: odst_default_minimal
+      SecretArn: !Ref RDSSecret
+      Template: true
+  
+
+  PostgresDBRestorePopulatedDefault:
+    Condition: RestoreThePopulatedDB
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${PopulatedDbS3Name}.sql'
+      Database: ods_default_default
+      SecretArn: !Ref RDSSecret
+      Template: false
+
+  PostgresDBRestorePopulatedTemplate:
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${PopulatedDbS3Name}.sql'
+      Database: odst_default_populated
+      SecretArn: !Ref RDSSecret
+      Template: true
+  
+
+  PostgresDBRestoreSecurityDefault:
+    Condition: SingleTenancy
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${SecurityDbS3Name}.sql'
+      Database: security_default
+      SecretArn: !Ref RDSSecret
+      Template: false
+
+  PostgresDBRestoreSecurityTemplate:
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Type: Custom::PostgresDBRestore
+    Properties:
+      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      Bucket: !Ref 'S3SourceBucket'
+      BucketKey: !Sub '${S3SourceKeyName}/${SecurityDbS3Name}.sql'
+      Database: security_template
+      SecretArn: !Ref RDSSecret
+      Template: true
+
+  ReadReplicaManagement:
+    Condition: UseReplica
+    DeletionPolicy: Delete
+    Type: Custom::ReadReplicaManagement
+    Properties:
+      ServiceToken: !Ref 'ODSDerivativesLambdaArn'
+      SecretArn: !Ref RDSSecret
+      DerivativeType: 'ReadReplica'
+  
+  APIPublisherManagement:
+    Condition: UsePublisher
+    DeletionPolicy: Delete
+    Type: Custom::APIPublisherManagement
+    Properties:
+      ServiceToken: !Ref 'ODSDerivativesLambdaArn'
+      SecretArn: !Ref RDSSecret
+      DerivativeType: 'Snapshot'

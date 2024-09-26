@@ -1,0 +1,429 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Deploys the ElasticBeanstalk application for the Ed-Fi Web Api.  
+Parameters:
+  EnvLabel:
+    Description: Provide a label for your environment to identify resources easier.
+    Type: String
+  S3BucketName:
+    Type: String
+    Description: This provides the name of the S3 bucket where the Lambda source code
+      resides.
+  EC2SecurityGroup:
+    Type: String
+    Description: This provides the identifier of the security group to use with EC2 instances.
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the private subnet 1 in Availability Zone 1
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the private subnet 2 in Availability Zone 2
+  InstanceTypes:
+    Type: String
+    Description: Size of the EC2 machines to host the Docker containers
+    Default: t3a.medium,t3.medium
+  VpcId: 
+    Type: AWS::EC2::VPC::Id
+    Description: This provides the VPC to deploy resources in.
+  EdFiTenancyMode:
+    Description: The tenancy mode that Ed-Fi will run in.
+    AllowedValues:
+      - 'SingleTenant'
+      - 'MultiTenant'
+    Default: 'SingleTenant'
+    Type: String
+  RDSSecret:
+    Type: String
+    Description: ARN of the secret in Secrets Manager containing RDS credentials
+  BeanstalkServiceRole:
+    Type: String
+    Description: ARN of the service Role for Elastic Beanstalk
+  IamInstanceProfile:
+    Type: String
+    Description: This provides the IamInstanceProfile
+  WebApiZipFile:
+    Type: String
+    Description: name of the Zip File to use for the initial version in Beanstalk
+    Default: 'WebApi.zip'
+  WebAPIMinInstances:
+    Type: Number
+    Description: Minimum Application Server Capacity for EB.
+  WebAPIMaxInstances:
+    Type: Number
+    Description: Maximum Application Server Capacity for EB.
+  SpotFleetPercentage:
+    Type: Number
+    Description: The percentage of On-Demand Instances.
+    Default: 70
+  KmsKeyId:
+    Description: The KMS Key ID used to encrypt SNS Topic.
+    Type: String
+  SnsToSlackLambdaArn:
+    Type: String
+    Description: ARN of the SNS to Slack Lambda Function
+  DomainName:
+    Type: String
+    Description: Domain Name for the environment
+  AccessRestriction:
+    Description: Restrict access to wildcard subdomains of DomainName, or exactly DomainName?
+    Type: String
+    AllowedValues:
+      - '*.DomainName'
+      - 'DomainName'
+    Default: '*.DomainName'
+  DeploymentStrategy:
+    Type: String
+    Description: Beanstalk deployment strategy for platform updates and application versions.
+    AllowedValues:
+      - 'RollingWithAdditionalBatch'
+      - 'AllAtOnce'
+    Default: 'RollingWithAdditionalBatch'
+  WebAPIMaxPoolSize:
+    Type: Number
+    Description: Maximun Pool Size per Application Server
+  WebAPIConnectionIdleLifetime:
+    Type: Number
+    Description: Connection Idle Lifetime
+  SharedAlbArn:
+    Type: String
+    Description: ARN of the shared ALB
+  SharedAlbHTTPSListenerArn:
+    Type: String
+    Description: ARN of the 443 Listener on the shared ALB
+  SNSTopicArn:
+    Description: ARN of SNS topic to publish Route53 HealthCheck Alarms
+    Type: String
+  East1AlarmLambdaArn:
+    Type: String
+    Description: ARN of the East1 Alarm Lambda Function
+  UploadAndDeployArn:
+    Type: String
+    Description: ARN of the Upload and Deploy Function
+  Partner:
+    Type: String
+    Description: Select partner for which Starting Blocks environment will be deployed.
+    Default: 'ea'
+
+Conditions:
+  UseWildcardSubdomains: !Equals
+    - !Ref 'AccessRestriction'
+    - '*.DomainName'
+  UseRollingUpdates: !Equals
+    - !Ref 'DeploymentStrategy'
+    - 'RollingWithAdditionalBatch'
+  EnableHealthNotifications: 
+    !Not [!Equals [!Ref SnsToSlackLambdaArn, '']]
+  MaxInstancesZero: !Equals 
+    - !Ref WebAPIMaxInstances
+    - 0
+  MultiTenancy: !Equals 
+    - !Ref EdFiTenancyMode
+    - MultiTenant
+  EnableHealthCheck:
+    !Not [!Equals [!Ref SNSTopicArn, '']]
+Resources:
+    SharedAlbHTTPSRule:
+      DependsOn:
+        - BeanstalkUploadAndDeploy
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+          - Type: forward
+            TargetGroupArn: !Sub '{{resolve:ssm:/ed-fi/beanstalk/environments/${BeanstalkWebApiEnvironment}/parameters/AWSEBV2LoadBalancerTargetGroup}}'
+        Conditions:
+          - Field: host-header
+            HostHeaderConfig:
+              Values:
+                - !If [ UseWildcardSubdomains, !Sub '*.${DomainName}', !Ref DomainName ]
+        ListenerArn: !Ref SharedAlbHTTPSListenerArn
+        Priority: 800
+    BeanstalkWebApiApplication:
+        Type: AWS::ElasticBeanstalk::Application
+        Properties: 
+          ApplicationName: !Sub '${EnvLabel}-WebApi'
+          Description: EdFi Web API
+    BeanstalkUploadAndDeploy:
+      UpdateReplacePolicy: Retain
+      DeletionPolicy: Retain
+      Type: Custom::UploadAndDeploy
+      Properties:
+        ServiceToken: !Ref UploadAndDeployArn
+        S3Bucket: !Ref S3BucketName
+        S3Key: !Sub 'docker/${WebApiZipFile}'
+        BeanstalkApplication: !Ref BeanstalkWebApiApplication
+        BeanstalkEnvironment: !Ref BeanstalkWebApiEnvironment
+        WaitForSSM: !Sub '/ed-fi/beanstalk/environments/${BeanstalkWebApiEnvironment}/parameters/AWSEBV2LoadBalancerTargetGroup'
+    BeanstalkWebApiSNSTopic:
+      Condition: EnableHealthNotifications
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: !Sub '${EnvLabel}-BeanstalkWebApi'
+        KmsMasterKeyId: !Ref KmsKeyId
+        Subscription:
+          - Endpoint: !Ref 'SnsToSlackLambdaArn'
+            Protocol: lambda
+    BeanstalkWebApiSNSTopicPolicy:
+      Condition: EnableHealthNotifications
+      Type: AWS::SNS::TopicPolicy
+      Properties:
+        Topics:
+          - !Ref 'BeanstalkWebApiSNSTopic'
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                AWS: '*'
+              Action:
+                - SNS:GetTopicAttributes
+                - SNS:SetTopicAttributes
+                - SNS:AddPermission
+                - SNS:RemovePermission
+                - SNS:DeleteTopic
+                - SNS:Subscribe
+                - SNS:ListSubscriptionsByTopic
+                - SNS:Publish
+                - SNS:Receive
+              Resource: !Ref 'BeanstalkWebApiSNSTopic'
+              Condition:
+                StringEquals:
+                  AWS:SourceOwner: !Ref 'AWS::AccountId'
+    BeanstalkWebApiEnvironment:
+        Type: AWS::ElasticBeanstalk::Environment
+        Properties: 
+          ApplicationName: !Ref BeanstalkWebApiApplication
+          Description: 'Beanstalk environment for the EdFi Web API'
+          EnvironmentName: !Sub '${EnvLabel}-WebApi-Prod'
+          OptionSettings:
+            - !If
+              - EnableHealthNotifications
+              - Namespace: aws:elasticbeanstalk:sns:topics
+                OptionName: Notification Topic ARN
+                Value: !Ref 'BeanstalkWebApiSNSTopic'
+              - !Ref 'AWS::NoValue'
+            - Namespace: aws:elasticbeanstalk:healthreporting:system
+              OptionName: ConfigDocument
+              Value: | 
+                {
+                    "Version": 1,
+                    "Rules": {
+                        "Environment": {
+                            "Application": {
+                                "ApplicationRequests4xx": {
+                                    "Enabled": false
+                                }
+                            },
+                            "ELB": {
+                                "ELBRequests4xx": {
+                                    "Enabled": false
+                                }
+                            }
+                        }
+                    }
+                }
+            - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+              OptionName: RollingUpdateEnabled
+              Value: !If [ UseRollingUpdates, true, false ]
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+                OptionName: MaxBatchSize
+                Value: 1
+              - !Ref 'AWS::NoValue'
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+                OptionName: MinInstancesInService
+                Value: !Ref 'WebAPIMinInstances'
+              - !Ref 'AWS::NoValue'
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+                OptionName: RollingUpdateType
+                Value: Health
+              - !Ref 'AWS::NoValue'
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+                OptionName: Timeout
+                Value: PT30M
+              - !Ref 'AWS::NoValue'
+            - Namespace: aws:elasticbeanstalk:command
+              OptionName: DeploymentPolicy
+              Value: !Ref DeploymentStrategy
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:elasticbeanstalk:command
+                OptionName: BatchSizeType
+                Value: Fixed
+              - !Ref 'AWS::NoValue'
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:elasticbeanstalk:command
+                OptionName: BatchSize
+                Value: 1
+              - !Ref 'AWS::NoValue'
+            - Namespace: aws:autoscaling:asg
+              OptionName: MinSize
+              Value: !Ref 'WebAPIMinInstances'
+            - Namespace: aws:autoscaling:asg
+              OptionName: MaxSize
+              Value: !Ref 'WebAPIMaxInstances'
+            - Namespace: aws:ec2:instances
+              OptionName: SpotFleetOnDemandAboveBasePercentage
+              Value: !Ref 'SpotFleetPercentage'
+            - Namespace: aws:elasticbeanstalk:environment
+              OptionName: ServiceRole
+              Value: !Ref BeanstalkServiceRole
+            - Namespace: aws:elasticbeanstalk:environment
+              OptionName: EnvironmentType
+              Value: LoadBalanced
+            - Namespace: aws:elasticbeanstalk:environment
+              OptionName: LoadBalancerType
+              Value: application
+            - Namespace: aws:elasticbeanstalk:environment
+              OptionName: LoadBalancerIsShared
+              Value: true
+            - Namespace: aws:elbv2:loadbalancer
+              OptionName: SharedLoadBalancer
+              Value: !Ref SharedAlbArn
+              # Assign default rule to the dummy listener to prevent port 80 rules
+            - Namespace: aws:elbv2:listener:14443
+              OptionName: Rules
+              Value: 'default'
+            - Namespace: aws:elasticbeanstalk:environment:process:default
+              OptionName: Port
+              Value: 443
+            - Namespace: aws:elasticbeanstalk:environment:process:default
+              OptionName: Protocol
+              Value: HTTPS
+            - Namespace: aws:ec2:instances
+              OptionName: InstanceTypes
+              Value: !Ref InstanceTypes
+            - Namespace: aws:autoscaling:launchconfiguration
+              OptionName: DisableIMDSv1
+              Value: true
+            - Namespace: aws:autoscaling:launchconfiguration
+              OptionName: IamInstanceProfile
+              Value: !Ref IamInstanceProfile
+            - Namespace: aws:autoscaling:launchconfiguration
+              OptionName: SecurityGroups
+              Value: !Ref EC2SecurityGroup
+            - Namespace: aws:ec2:instances
+              OptionName: EnableSpot
+              Value: true
+            - Namespace: aws:ec2:instances
+              OptionName: SpotFleetOnDemandBase
+              Value: !If [ "MaxInstancesZero", 0, 2 ]
+            - Namespace: aws:autoscaling:asg
+              OptionName: EnableCapacityRebalancing
+              Value: true
+            - Namespace: aws:autoscaling:trigger
+              OptionName: Unit
+              Value: Percent
+            - Namespace: aws:autoscaling:trigger
+              OptionName: UpperThreshold
+              Value: 60
+            - Namespace: aws:autoscaling:trigger
+              OptionName: LowerThreshold
+              Value: 20
+            - Namespace: aws:autoscaling:trigger
+              OptionName: MeasureName
+              Value: CPUUtilization
+            - Namespace: aws:ec2:vpc
+              OptionName: VPCId
+              Value: !Ref VpcId
+            - Namespace: aws:ec2:vpc
+              OptionName: Subnets
+              Value: !Join
+                - ','
+                - - !Ref PrivateSubnet1Id
+                  - !Ref PrivateSubnet2Id
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: AURORA_MASTER_SECRET
+              Value: !Ref RDSSecret
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: API_MODE
+              Value: !Ref EdFiTenancyMode
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: MULTI_TENANCY
+              Value: !If [ MultiTenancy, 'true', 'false' ]
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ApiSettings__DefaultPageSizeLimit
+              Value: 5000
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: Logging__LogLevel__Default
+              Value: Warning
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: MAX_POOL_SIZE
+              Value: !Ref WebAPIMaxPoolSize
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: CONNECTION_IDLE_LIFETIME
+              Value: !Ref WebAPIConnectionIdleLifetime
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ENV_NAME
+              Value: !Sub '${EnvLabel}-WebApi-Prod'
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ENV_LABEL
+              Value: !Ref EnvLabel
+            - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+              OptionName: StreamLogs
+              Value: true
+            - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+              OptionName: DeleteOnTerminate
+              Value: false
+            - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+              OptionName: RetentionInDays
+              Value: 365
+          SolutionStackName: !Sub 'arn:aws:elasticbeanstalk:${AWS::Region}::platform/Docker running on 64bit Amazon Linux 2023'
+          Tier: 
+            Name: 'WebServer'
+            Type: 'Standard'
+            Version: '1.0'
+          Tags:
+            - Key: Environment
+              Value: !Ref 'EnvLabel'
+            - Key: EdFiApplication
+              Value: WebApi
+    Route53HealthCheck:
+      Condition: EnableHealthCheck
+      Type: AWS::Route53::HealthCheck
+      Properties: 
+        HealthCheckConfig: 
+          Port: 443
+          Type: HTTPS
+          FullyQualifiedDomainName: !Sub 'healthcheck.${DomainName}'
+          RequestInterval: 30
+          FailureThreshold: 3
+        HealthCheckTags:
+          - Key: Name
+            Value: !Sub '${EnvLabel}-Route53-HealthCheck'
+    East1Route53HealthCheckAlarm:
+      Condition: EnableHealthCheck
+      Type: Custom::East1Alarm
+      Properties:
+        ServiceToken: !Ref 'East1AlarmLambdaArn'
+        EnvLabel: !Ref 'EnvLabel'
+        SNSTopicArn: !Ref 'SNSTopicArn'
+        Route53HealthCheck: !Ref 'Route53HealthCheck'
+        AlarmLabel: !Ref 'Partner'
+
+Outputs:
+  EndpointURL:
+    Description: The DNS name of the Web Api ELB
+    Value: !GetAtt 'BeanstalkWebApiEnvironment.EndpointURL'
+  ApplicationName: 
+    Description: The name of the ElasticBeanstalk Application.
+    Value: !Ref 'BeanstalkWebApiApplication'
+  EnvironmentName: 
+    Description: The name of the ElasticBeanstalk Environment.
+    Value: !Ref 'BeanstalkWebApiEnvironment'
+  TargetGroupArn:
+    Description: ARN of the ElasticBeanstalk Target Group.
+    Value: !Sub '{{resolve:ssm:/ed-fi/beanstalk/environments/${BeanstalkWebApiEnvironment}/parameters/AWSEBV2LoadBalancerTargetGroup}}'

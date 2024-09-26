@@ -1,0 +1,268 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Deploys the ElasticBeanstalk application For the Ed-Fi Admin Api.  
+Parameters:
+  EnvLabel:
+    Description: Provide a label for your environment to identify resources easier.
+    Type: String
+  S3BucketName:
+    Type: String
+    Description: This provides the name of the S3 bucket where the Lambda source code
+      resides.
+  EC2SecurityGroup:
+    Type: String
+    Description: This provides the identifier of the security group to use with EC2 instances.
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the private subnet 1 in Availability Zone 1
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the private subnet 2 in Availability Zone 2
+  InstanceTypes:
+    Type: String
+    Description: Size of the EC2 machines to host the Docker containers
+    Default: t3a.small,t3.small
+  VpcId: 
+    Type: AWS::EC2::VPC::Id
+    Description: This provides the VPC to deploy resources in.
+  EdFiTenancyMode:
+    Description: The tenancy mode that Ed-Fi will run in.
+    AllowedValues:
+      - 'SingleTenant'
+      - 'MultiTenant'
+    Default: 'SingleTenant'
+    Type: String
+  RDSSecret:
+    Type: String
+    Description: ARN of the secret in Secrets Manager containing RDS credentials
+  IamInstanceProfile:
+    Type: String
+    Description: This provides the IamInstanceProfile
+  DomainName:
+    Type: String
+    Description: Common name on the SSL certificate
+  SharedAlbArn:
+    Type: String
+    Description: ARN of the shared ALB
+  SharedAlbAdminApiListenerArn:
+    Type: String
+    Description: ARN of the 8443 Listener on the shared ALB
+  DeploymentStrategy:
+    Type: String
+    Description: Beanstalk deployment strategy for platform updates and application versions.
+    AllowedValues:
+      - 'RollingWithAdditionalBatch'
+      - 'AllAtOnce'
+    Default: 'RollingWithAdditionalBatch'
+  UploadAndDeployArn:
+    Type: String
+    Description: ARN of the Upload and Deploy Function
+
+Conditions:
+  MultiTenancy: !Equals 
+    - !Ref EdFiTenancyMode
+    - MultiTenant
+  UseRollingUpdates: !Equals
+    - !Ref 'DeploymentStrategy'
+    - 'RollingWithAdditionalBatch'
+
+Resources:
+    SharedAlbAdminApiRuleCustom:
+      DependsOn:
+        - BeanstalkUploadAndDeploy
+      Type: AWS::ElasticLoadBalancingV2::ListenerRule
+      Properties:
+        Actions:
+          - Type: forward
+            TargetGroupArn: !Sub '{{resolve:ssm:/ed-fi/beanstalk/environments/${BeanstalkAdminApiEnvironment}/parameters/AWSEBV2LoadBalancerTargetGroup}}'
+        Conditions:
+          - Field: host-header
+            HostHeaderConfig:
+              Values:
+                - !Sub 'adminapi.${DomainName}'
+        ListenerArn: !Ref SharedAlbAdminApiListenerArn
+        Priority: 200
+    BeanstalkAdminApiApplication:
+        Type: AWS::ElasticBeanstalk::Application
+        Properties: 
+          ApplicationName: !Sub '${EnvLabel}-AdminApi'
+          Description: EdFi Admin Api
+    BeanstalkUploadAndDeploy:
+      UpdateReplacePolicy: Retain
+      DeletionPolicy: Retain
+      Type: Custom::UploadAndDeploy
+      Properties:
+        ServiceToken: !Ref UploadAndDeployArn
+        S3Bucket: !Ref S3BucketName
+        S3Key: 'docker/AdminApi-2.1.0.2655.zip'
+        BeanstalkApplication: !Ref BeanstalkAdminApiApplication
+        BeanstalkEnvironment: !Ref BeanstalkAdminApiEnvironment
+        WaitForSSM: !Sub '/ed-fi/beanstalk/environments/${BeanstalkAdminApiEnvironment}/parameters/AWSEBV2LoadBalancerTargetGroup'
+    BeanstalkAdminApiEnvironment:
+        Type: AWS::ElasticBeanstalk::Environment
+        Properties: 
+          ApplicationName: !Ref BeanstalkAdminApiApplication
+          Description: 'Beanstalk environment for the EdFi Admin Api'
+          EnvironmentName: !Sub '${EnvLabel}-AdminApi-Prod'
+          OptionSettings: 
+            - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+              OptionName: RollingUpdateEnabled
+              Value: !If [ UseRollingUpdates, true, false ]
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+                OptionName: MaxBatchSize
+                Value: 1
+              - !Ref 'AWS::NoValue'
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+                OptionName: MinInstancesInService
+                Value: 1
+              - !Ref 'AWS::NoValue'
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+                OptionName: RollingUpdateType
+                Value: Health
+              - !Ref 'AWS::NoValue'
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+                OptionName: Timeout
+                Value: PT30M
+              - !Ref 'AWS::NoValue'
+            - Namespace: aws:elasticbeanstalk:command
+              OptionName: DeploymentPolicy
+              Value: !Ref DeploymentStrategy
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:elasticbeanstalk:command
+                OptionName: BatchSizeType
+                Value: Fixed
+              - !Ref 'AWS::NoValue'
+            - !If
+              - UseRollingUpdates
+              - Namespace: aws:elasticbeanstalk:command
+                OptionName: BatchSize
+                Value: 1
+              - !Ref 'AWS::NoValue'
+            - Namespace: aws:autoscaling:asg
+              OptionName: MinSize
+              Value: 1
+            - Namespace: aws:autoscaling:asg
+              OptionName: MaxSize
+              Value: 2
+            - Namespace: aws:elasticbeanstalk:environment
+              OptionName: EnvironmentType
+              Value: LoadBalanced
+            - Namespace: aws:elasticbeanstalk:environment
+              OptionName: LoadBalancerType
+              Value: application
+            - Namespace: aws:elasticbeanstalk:environment
+              OptionName: LoadBalancerIsShared
+              Value: true
+            - Namespace: aws:elbv2:loadbalancer
+              OptionName: SharedLoadBalancer
+              Value: !Ref SharedAlbArn
+            - Namespace: aws:elbv2:listener:14443
+              OptionName: Rules
+              Value: 'default'
+            - Namespace: aws:elasticbeanstalk:environment:process:default
+              OptionName: Port
+              Value: 443
+            - Namespace: aws:elasticbeanstalk:environment:process:default
+              OptionName: Protocol
+              Value: HTTPS
+            - Namespace: aws:elasticbeanstalk:environment:process:default
+              OptionName: HealthCheckPath
+              Value: /health
+            - Namespace: aws:ec2:instances
+              OptionName: InstanceTypes
+              Value: !Ref InstanceTypes
+            - Namespace: aws:autoscaling:launchconfiguration
+              OptionName: DisableIMDSv1
+              Value: true
+            - Namespace: aws:autoscaling:launchconfiguration
+              OptionName: IamInstanceProfile
+              Value: !Ref IamInstanceProfile
+            - Namespace: aws:autoscaling:launchconfiguration
+              OptionName: SecurityGroups
+              Value: !Ref EC2SecurityGroup
+            - Namespace: aws:ec2:instances
+              OptionName: EnableSpot
+              Value: true
+            - Namespace: aws:ec2:instances
+              OptionName: SpotFleetOnDemandBase
+              Value:  1
+            - Namespace: aws:autoscaling:asg
+              OptionName: EnableCapacityRebalancing
+              Value: true  
+            - Namespace: aws:ec2:vpc
+              OptionName: VPCId
+              Value: !Ref VpcId
+            - Namespace: aws:ec2:vpc
+              OptionName: Subnets
+              Value: !Join
+                - ','
+                - - !Ref PrivateSubnet1Id
+                  - !Ref PrivateSubnet2Id
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: AURORA_MASTER_SECRET
+              Value: !Ref RDSSecret
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: AWS_DEFAULT_REGION
+              Value: !Ref AWS::Region
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: API_MODE
+              Value: !Ref EdFiTenancyMode
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: MULTI_TENANCY
+              Value: !If [ MultiTenancy, 'true', 'false' ]
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ENV_LABEL
+              Value: !Ref EnvLabel
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: API_INTERNAL_URL
+              Value: !Sub 'https://admin-api.${DomainName}'
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ADMIN_API_SECRET
+              Value: !Sub '${EnvLabel}-AdminApiSecret'
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ISSUER_URL
+              Value: !Sub 'https://adminapi.${DomainName}'
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ALLOW_REGISTRATION
+              Value: 'false'
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ENABLE_SWAGGER
+              Value: 'false'
+            - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+              OptionName: StreamLogs
+              Value: true
+            - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+              OptionName: DeleteOnTerminate
+              Value: false
+            - Namespace: aws:elasticbeanstalk:cloudwatch:logs
+              OptionName: RetentionInDays
+              Value: 365
+          SolutionStackName: !Sub 'arn:aws:elasticbeanstalk:${AWS::Region}::platform/Docker running on 64bit Amazon Linux 2023'
+          Tier: 
+            Name: 'WebServer'
+            Type: 'Standard'
+            Version: '1.0'
+          Tags:
+            - Key: Environment
+              Value: !Ref 'EnvLabel'
+            - Key: EdFiApplication
+              Value: AdminApi
+
+Outputs:
+  EndpointURL:
+    Description: The Beanstalk DNS name of the Admin Api ELB
+    Value: !GetAtt 'BeanstalkAdminApiEnvironment.EndpointURL'
+    Export:
+      Name: !Sub '${AWS::StackName}-EndpointURL'

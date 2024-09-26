@@ -1,0 +1,729 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Deploys a StartingBlocks Environment (SBE).  An existing VPC is required.
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Template information
+        Parameters:
+          - EnvLabel
+          - S3SourceBucket
+          - HostedZoneId
+          - DomainName
+          - Partner
+      - Label:
+          default: EdFi ODS API Environment Information
+        Parameters:
+          - WebApiZipFile
+          - DatabaseArtifact
+          - EnvironmentSize
+          - PostgresVersion
+          - DatabaseType
+          - DeployReplica
+          - EdFiTenancyMode
+          - DatabaseData
+          - DataStandardVersion
+          - APIPublisher
+          - AdminInterface
+          - AdminApiCIDRs
+          - AdminAccountIds
+          - DeploymentStrategy
+          - WebAPIMinInstances
+          - WebAPIMaxInstances
+          - SpotFleetPercentage
+          - WebAPIMaxPoolSize
+          - WebAPIConnectionIdleLifetime
+          - WebACLArn
+          - SSLPolicy
+          - SNSTopicArn
+          - DeploySwagger
+          - SlackWebhookUrl
+      - Label:
+          default: SSH Server Options
+        Parameters:
+          - SSHServerParentStack
+      - Label:
+          default: Provide Your Own Existing VPC Network Configuration
+        Parameters:
+          - VpcId
+          - PublicSubnet1Id
+          - PublicSubnet2Id
+          - PrivateSubnet1Id
+          - PrivateSubnet2Id
+
+    ParameterLabels:
+      S3SourceBucket:
+        default: S3 Bucket name containing this template
+      VpcId:
+        default: VPC ID
+      PublicSubnet1Id:
+        default: Public Subnet 1 ID
+      PublicSubnet2Id:
+        default: Public Subnet 2 ID
+      PrivateSubnet1Id:
+        default: Private Subnet 1 ID
+      PrivateSubnet2Id:
+        default: Private Subnet 2 ID
+      DeploymentStrategy:
+        default: Update/Deployment Strategy
+      WebAPIMinInstances:
+        default: Minimum Web API Instances
+      WebAPIMaxInstances:
+        default: Maximum Web API Instances
+      SpotFleetPercentage:
+        default: The percentage of On-Demand Instances.
+      WebAPIMaxPoolSize:
+        default: Maximun Pool Size per Application Server
+      WebAPIConnectionIdleLifetime:
+        default: Connection Idle Lifetime
+      WebACLArn:
+        default: WebACL ARN
+      DatabaseData:
+        default: Initial ODS API Database Data Set
+      DataStandardVersion:
+        default: Data Standard Version
+      DeployReplica:
+        default: Deploy Read Replica
+      PostgresVersion:
+        default: PostgreSQL Version
+      EdFiTenancyMode:
+        default: EdFi Tenancy Mode
+      WebApiZipFile:
+        default: Name of the zip file containing the EdFi WebApi packaged for Elastic Beanstalk
+      DatabaseArtifact:
+        default: Database Artifact
+      EnvironmentSize:
+        default: Select a sizing option based on anticipated levels of usage
+      EnvLabel:
+        default: Label your environment
+      SSHServerParentStack:
+        default: Existing SSH server stack (optional)
+      DatabaseType:
+        default: The database type for your environment
+      APIPublisher:
+        default: API Publisher Support
+      AdminApiCIDRs:
+        default: Network Address ranges (CIDR) to allow connections to the Admin Api
+      AdminAccountIds:
+        default: AWS Account ID's to allow to invoke admin Lambda functions
+      AdminInterface:
+        default: Admin Interface
+      DomainName:
+        default: Domain Name to generate a wildcard SSL certificate for.  DO NOT include '*.'
+      HostedZoneId:
+        default: Route53 zone to create the records in
+      Partner:
+        default: Partner name for which environment will be deployed.
+      SSLPolicy:
+        default: SSL Policy for ALB.
+      SNSTopicArn:
+        default: Centralized SNS topic
+      DeploySwagger:
+        default: Deploy Swagger UI
+      SlackWebhookUrl:
+        default: The URL of the Slack webhook to send notifications to.
+Parameters:
+  S3SourceBucket:
+    Type: String
+    Description: This bucket contains the source files for CF, Lambda, Docker, etc.  MUST be in the same region as the CF Stack.
+  EnvironmentSize:
+    AllowedValues:
+      - small
+      - medium
+      - large
+      - xlarge
+      - 2xlarge
+    Default: small
+    Description: Select the size of the environment to launch.  Smaller is cheaper but less performant. 
+    Type: String
+  WebApiZipFile:
+    Default: 'default'
+    Description: If using a custom Ed-Fi build, provide the zip file name here.  Use 'default' to deploy stock Ed-Fi build for the chosen DataStandard version.
+    Type: String
+  DatabaseArtifact:
+    Default: 'default'
+    Description: If using custom databases, provide the database artifact name here.  Use 'default' to deploy stock Ed-Fi databases for the chosen DataStandard version.
+    Type: String
+  EnvLabel:
+    Description: Provide a unique label for your environment to identify resources.  You cannot use an label name that is already in use.
+    Type: String
+  DomainName:
+    Description: The fully qualified domain name to be used for this ODS
+      API environment. (e.g. edfi.domain.com)  MUST be part of the Route53 Hosted Zone.
+    Type: String
+  HostedZoneId:
+    Description: A Route53 HostedZone is required.  Select the zone for this environment.
+    Type: AWS::Route53::HostedZone::Id
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: The VPC ID to use.
+    ConstraintDescription: You must select an existing VPC for this deployment
+  PublicSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: The Subnet ID of a Public Subnet in one of the Availability Zones above
+    ConstraintDescription: You must select an existing Public Subnet ID in the VPC selected for this deployment
+  PublicSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: The Subnet ID of a Public Subnet in the other Availability Zone above
+    ConstraintDescription: You must select an existing Public Subnet ID in the VPC selected for this deployment
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: The Subnet ID of a Private Subnet in one of the Availability Zones above
+    ConstraintDescription: You must select an existing Private Subnet ID in the VPC selected for this deployment
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: The Subnet ID of a Private Subnet in the other Availability Zone above
+    ConstraintDescription: You must select an existing Private Subnet ID in the VPC selected for this deployment
+  SSHServerParentStack:
+    Description: Stack name for the existing SSH server parent stack
+    Type: String
+  APIPublisher:
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+    Description: Would you like to deploy resources to support API Publisher?
+    Type: String
+  AdminApiCIDRs:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))(,(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2])))*$
+    Description: |
+      For security reasons we recommend that you only enable trusted IPs for external access to the Admin Api.  
+      This should be a comma separated list of trusted networks in CIDR notation (X.X.X.X/X). 
+      The StartingBlocks Admin App IP's, and the Education Analytics office IP range are as follows.
+      (18.119.27.161/32,3.135.55.248/32,172.102.6.120/29)
+    Type: String
+  AdminInterface:
+    Description: The interface that will provide management functions for this environment.
+    Type: String
+    Default: "Ed-Fi Admin API"
+    AllowedValues:
+      - "Ed-Fi Admin API"
+      - "None"
+  AdminAccountIds:
+    Description: | 
+      When using StartingBlocks Admin App, these (comma separated) AWS Account ID's will be given permission to invoke the management Lambda Functions.
+      Account ID 179685256884 will allow the Education Analytics StartingBlocks Admin App.
+    Type: String
+    AllowedPattern: "^[0-9]{12}(,[0-9]{12})*$"
+  EdFiTenancyMode:
+    Description: The tenancy mode that Ed-Fi will run in.
+    AllowedValues:
+      - 'SingleTenant'
+      - 'MultiTenant'
+    Default: 'MultiTenant'
+    Type: String
+  PostgresVersion:
+    Description: Ed-Fi Alliance officially supports Postgres 13 with Ed-Fi 7.x
+    Type: String
+    AllowedValues:
+      - 'Thirteen'
+      - 'Fourteen'
+      - 'Fifteen'
+    Default: 'Fifteen'
+  DatabaseType:
+    Description: Aurora compute capacity mode.
+    Type: String
+    Default: "Provisioned"
+    AllowedValues:
+      - "Provisioned"
+      - "Serverless"
+  DatabaseData:
+    Type: String
+    Default: minimal
+    AllowedValues:
+      - minimal
+      - populated
+  DataStandardVersion:
+    Type: String
+    Default: DS4
+    Description: Which version of the Ed-Fi Data Standard should be deployed.  This can NOT be changed later.
+    AllowedValues:
+      - DS4
+      - DS5
+  DeployReplica:
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+    Description: Would you like your database to use a read replica? This will increase the cost of the environment, but imporve performance and provide for an immediate failover database.
+    Type: String
+  DeploymentStrategy:
+    Type: String
+    Description: Beanstalk deployment strategy for platform updates and application versions.
+    AllowedValues:
+      - 'RollingWithAdditionalBatch'
+      - 'AllAtOnce'
+    Default: 'RollingWithAdditionalBatch'
+  WebAPIMinInstances:
+    Type: Number
+    Description: Minimum Application Server Capacity for Web API Stack.
+    Default: 1
+  WebAPIMaxInstances:
+    Type: Number
+    Description: Maximum Application Server Capacity for Web API Stack.
+    Default: 3
+  SpotFleetPercentage:
+    Type: Number
+    Description: The percentage of On-Demand Instances as part of additional capacity that your Auto Scaling group provisions beyond the SpotOnDemandBase instances.
+    Default: 70
+  WebAPIMaxPoolSize:
+    Type: Number
+    Description: Maximun pool size for connections to the Ed-Fi ODS database
+    Default: 200
+  WebAPIConnectionIdleLifetime:
+    Type: Number
+    Description: Connection idle lifetime for connections to the Ed-Fi ODS database
+    Default: 120
+  WebACLArn:
+    Type: String
+    Description: Provide the ARN of a WAF to attach to the Web API (optional)
+  Partner:
+    Type: String
+    Description: Enter partner for which Starting Blocks environment will be deployed.
+    Default: 'ea'
+  SSLPolicy:
+    Description: Policy to determine which ssl/tls ciphers are accepted. Aeries Districts use ELBSecurityPolicy-TLS13-1-2-2021-06.
+    Type: String
+    AllowedValues:
+      - 'ELBSecurityPolicy-TLS13-1-2-2021-06'
+      - 'ELBSecurityPolicy-TLS13-1-2-Res-2021-06'
+    Default: 'ELBSecurityPolicy-TLS13-1-2-Res-2021-06'
+  SNSTopicArn:
+    Description: ARN of SNS topic to publish Route53 HealthCheck Alarms (optional)
+    Type: String
+  DeploySwagger:
+    Type: String
+    Description: Will deploy Swagger UI to swagger-ui.{DomainName}
+    AllowedValues:
+      - 'True'
+      - 'False'
+    Default: 'False'
+  SlackWebhookUrl:
+    Type: String
+    Description: The URL of the Slack webhook to send notifications to (optional).
+Mappings: 
+  PostgreSQLInformation:
+    EngineVersion:
+      "Thirteen": "13.12"
+      "Fourteen": "14.9"
+      "Fifteen": "15.3"
+    EngineEdition:
+      "Standard": "postgres"
+    AccountInfo: 
+      "DBUsername": "postgres"
+    DBSize:
+      "small": "db.t4g.medium"
+      "medium": "db.t4g.large"
+      "large": "db.r6g.large"
+      "xlarge": "db.r6g.xlarge"
+      "2xlarge": "db.r6g.2xlarge"
+    MinServerlessCapacity:
+      "small": 0.5
+      "medium": 1
+      "large": 2
+      "xlarge": 4
+      "2xlarge": 8
+    MaxServerlessCapacity:
+      "small": 2
+      "medium": 4
+      "large": 8
+      "xlarge": 16
+      "2xlarge": 32
+    AppServerSize:
+      "small": "t3a.medium,t3.medium"
+      "medium": "t3.large,t3a.large"
+      "large": "t3.large,t3a.large"
+      "xlarge": "m6i.large,m6a.large"
+      "2xlarge": "m6i.xlarge,m6a.xlarge"
+    AdminServerSize:
+      "small": "t3a.small,t3.small"
+      "medium": "t3a.small,t3.small"
+      "large": "t3a.small,t3.small"
+      "xlarge": "t3a.medium,t3.medium"
+      "2xlarge": "t3a.medium,t3.medium"
+    SSHServerSize:
+      "small": "t4g.micro"
+      "medium": "t4g.micro"
+      "large": "t4g.small"
+      "xlarge": "t4g.small"
+      "2xlarge": "t4g.small"
+Conditions:
+  UsePopulatedData: !Equals
+    - !Ref 'DatabaseData'
+    - populated
+  UseAdminApi: !Equals [!Ref 'AdminInterface', "Ed-Fi Admin API"]
+  UseDefaultWebApiZip: !Equals 
+    - !Ref WebApiZipFile
+    - 'default'
+  EnableHealthCheck:
+    !Not [!Equals [!Ref SNSTopicArn, '']]
+  UseDefaultDatabase: !Equals 
+    - !Ref DatabaseArtifact
+    - 'default'
+  UsePublisher: !Equals [!Ref APIPublisher, 'true']
+  DeploySwaggerTemplate: !Equals
+    - !Ref 'DeploySwagger'
+    - 'True'
+  EnableSlackNotifications: !Not [!Equals [!Ref SlackWebhookUrl, '']]
+Rules:
+  SubnetsInVPC:
+    Assertions:
+      - Assert: !EachMemberIn
+          - !ValueOfAll
+            - AWS::EC2::Subnet::Id
+            - VpcId
+          - !RefAll 'AWS::EC2::VPC::Id'
+        AssertDescription: All subnets provided must be in the VPC selected for use
+
+Resources:
+  # Shared Resources stack deploys IAM, KMS, Security Groups, Secrets, Certificate, ALB, DynamoDB and Route53 resources
+  SharedResourcesStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-shared-resources.yml'
+      Parameters:
+        VpcId: !Ref 'VpcId'
+        EnvLabel: !Ref 'EnvLabel'
+        AdminInterface: !Ref AdminInterface
+        AdminApiCIDRs: !Ref AdminApiCIDRs
+        SSHServerParentStack: !Ref SSHServerParentStack
+        WebACLArn: !Ref 'WebACLArn'
+        PublicSubnet1Id: !Ref 'PublicSubnet1Id'
+        PublicSubnet2Id: !Ref 'PublicSubnet2Id'
+        DomainName: !Ref 'DomainName'
+        HostedZoneId: !Ref 'HostedZoneId'
+        SSLPolicy: !Ref SSLPolicy
+
+  LambdaCoreStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-lambda-core-functions.yml'
+      Parameters:
+        AdminInterface: !Ref AdminInterface
+        AdminAccountIds: !Ref AdminAccountIds
+        S3BucketSourceCode: !Ref 'S3SourceBucket'
+        S3KeySourceCode: lambdas
+        PrivateSubnet1Id: !Ref 'PrivateSubnet1Id'
+        PrivateSubnet2Id: !Ref 'PrivateSubnet2Id'
+        LambdaRestoreSGID: !GetAtt 'SharedResourcesStack.Outputs.DatabaseRestoreLambdaFunctionSGID'
+        LambdaDefaultSGID: !GetAtt 'SharedResourcesStack.Outputs.LambdaDefaultSGID'
+        EnvLabel: !Ref 'EnvLabel'
+        RDSSecret: !GetAtt 'SharedResourcesStack.Outputs.AuroraMasterSecret'
+        Partner: !Ref 'Partner'
+        EdFiTenancyMode: !Ref EdFiTenancyMode
+        DomainName: !Ref DomainName
+        WebAPIMaxPoolSize: !Ref WebAPIMaxPoolSize
+        WebAPIConnectionIdleLifetime: !Ref WebAPIConnectionIdleLifetime
+        DeployReplica: !Ref DeployReplica
+        APIPublisher: !Ref APIPublisher
+        SNSTopicArn: !Ref SNSTopicArn
+        SlackWebhookUrl: !Ref SlackWebhookUrl
+
+  DatabaseStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-aurora-postgres-db.yml'
+      Parameters:
+        EnvLabel: !Ref 'EnvLabel'
+        DBUsername: !FindInMap
+          - PostgreSQLInformation
+          - AccountInfo
+          - DBUsername
+        DBEngineVersion: !FindInMap
+          - PostgreSQLInformation
+          - EngineVersion
+          - !Ref PostgresVersion
+        DBInstanceClass: !FindInMap
+          - PostgreSQLInformation
+          - DBSize
+          - !Ref EnvironmentSize
+        DatabaseType: !Ref 'DatabaseType'
+        ServerlessMinCapacity: !FindInMap
+          - PostgreSQLInformation
+          - MinServerlessCapacity
+          - !Ref EnvironmentSize
+        ServerlessMaxCapacity: !FindInMap
+          - PostgreSQLInformation
+          - MaxServerlessCapacity
+          - !Ref EnvironmentSize
+        PrivateSubnet1Id: !Ref 'PrivateSubnet1Id'
+        PrivateSubnet2Id: !Ref 'PrivateSubnet2Id'
+        RDSSecurityGroupID: !GetAtt 'SharedResourcesStack.Outputs.RDSSecurityGroupID'
+        DeployReplica: !Ref DeployReplica
+        KmsKeyId: !GetAtt 'SharedResourcesStack.Outputs.KeyId'
+        RDSSecret: !GetAtt 'SharedResourcesStack.Outputs.AuroraMasterSecret'
+        SnsToSlackLambdaArn: !If
+          - EnableSlackNotifications
+          - !GetAtt 'LambdaCoreStack.Outputs.SnsToSlackLambdaArn'
+          - ''
+        CWRetentionLambdaArn: !GetAtt 'LambdaCoreStack.Outputs.SetCloudWatchRetentionFunctionArn'
+
+  LambdaRDSRestoreStack:
+    DependsOn: 
+      - DatabaseStack
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-restore-databases.yml'
+      Parameters:
+        RDSSecret: !GetAtt 'SharedResourcesStack.Outputs.AuroraMasterSecret'
+        RestoreMinimalDB: !If [UsePopulatedData, 'no', 'yes']
+        RestorePopulatedDB: !If [UsePopulatedData, 'yes', 'no']
+        EdFiTenancyMode: !Ref EdFiTenancyMode
+        S3SourceBucket: !Ref 'S3SourceBucket'
+        S3SourceKeyName: 'database'
+        AdminDbS3Name: !If 
+          - UseDefaultDatabase
+          - !Sub 'EdFi_Admin_7.1_${DataStandardVersion}'
+          - !Sub 'EdFi_Admin_${DatabaseArtifact}'
+        AdminApiDbS3Name: 'EdFi_Admin_Api_2.0'
+        SecurityDbS3Name: !If 
+          - UseDefaultDatabase
+          - !Sub 'EdFi_Security_7.1_${DataStandardVersion}'
+          - !Sub 'EdFi_Security_${DatabaseArtifact}'
+        MinimalDbS3Name: !If 
+          - UseDefaultDatabase
+          - !Sub 'EdFi_Ods_Minimal_Template_TPDM_Core_7.1_${DataStandardVersion}'
+          - !Sub 'EdFi_Ods_Minimal_Template_${DatabaseArtifact}'
+        PopulatedDbS3Name: !If 
+          - UseDefaultDatabase
+          - !Sub 'EdFi_Ods_Populated_Template_TPDM_Core_7.1_${DataStandardVersion}'
+          - !Sub 'EdFi_Ods_Populated_Template_${DatabaseArtifact}'
+        LambdaFunctionName: !GetAtt 'LambdaCoreStack.Outputs.DatabaseRestoreLambdaFunctionName'
+        DeployReplica: !Ref DeployReplica
+        ODSDerivativesLambdaArn: !GetAtt 'LambdaCoreStack.Outputs.ODSDerivativesLambdaArn'
+        APIPublisher: !Ref APIPublisher
+
+  WebApiBeanstalkStack:
+    DependsOn: LambdaRDSRestoreStack
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-beanstalk-web-api.yml'
+      Parameters:
+        WebAPIMinInstances: !Ref 'WebAPIMinInstances'
+        WebAPIMaxInstances: !Ref 'WebAPIMaxInstances'
+        SpotFleetPercentage: !Ref 'SpotFleetPercentage'
+        EnvLabel: !Ref 'EnvLabel'
+        VpcId: !Ref 'VpcId'
+        PrivateSubnet1Id: !Ref 'PrivateSubnet1Id'
+        PrivateSubnet2Id: !Ref 'PrivateSubnet2Id'
+        EC2SecurityGroup: !GetAtt 'SharedResourcesStack.Outputs.WebApiServerSecurityGroupID'
+        S3BucketName: !Ref 'S3SourceBucket'
+        InstanceTypes: !FindInMap
+          - PostgreSQLInformation
+          - AppServerSize
+          - !Ref EnvironmentSize
+        BeanstalkServiceRole: !GetAtt 'SharedResourcesStack.Outputs.ElasticBeanstalkServiceRoleName'
+        IamInstanceProfile: !GetAtt 'SharedResourcesStack.Outputs.ElasticBeanstalkEC2InstanceProfileName'
+        RDSSecret: !GetAtt 'SharedResourcesStack.Outputs.AuroraMasterSecret'
+        EdFiTenancyMode: !Ref 'EdFiTenancyMode'
+        WebApiZipFile: !If 
+          - UseDefaultWebApiZip
+          - !Sub 'WebApi-7.1.5125c-${DataStandardVersion}.zip'
+          - !Ref 'WebApiZipFile'
+        SnsToSlackLambdaArn: !If
+          - EnableSlackNotifications
+          - !GetAtt 'LambdaCoreStack.Outputs.SnsToSlackLambdaArn'
+          - ''
+        KmsKeyId: !GetAtt 'SharedResourcesStack.Outputs.KeyId'
+        DomainName: !Ref 'DomainName'
+        AccessRestriction: '*.DomainName'
+        DeploymentStrategy: !Ref DeploymentStrategy
+        WebAPIMaxPoolSize: !Ref WebAPIMaxPoolSize
+        WebAPIConnectionIdleLifetime: !Ref WebAPIConnectionIdleLifetime
+        SharedAlbArn: !GetAtt 'SharedResourcesStack.Outputs.SharedAlbArn'
+        SharedAlbHTTPSListenerArn: !GetAtt 'SharedResourcesStack.Outputs.SharedAlbHTTPSListenerArn'
+        SNSTopicArn: !Ref SNSTopicArn
+        East1AlarmLambdaArn: !If [EnableHealthCheck, !GetAtt 'LambdaCoreStack.Outputs.East1AlarmLambdaArn', '']
+        UploadAndDeployArn: !GetAtt 'LambdaCoreStack.Outputs.BeanstalkUploadAndDeployFunctionArn'
+        Partner: !Ref 'Partner'
+
+  AdminApiStack:
+    Condition: UseAdminApi
+    DependsOn: LambdaRDSRestoreStack
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-beanstalk-admin-api.yml'
+      Parameters:
+        EnvLabel: !Ref 'EnvLabel'
+        PrivateSubnet1Id: !Ref 'PrivateSubnet1Id'
+        PrivateSubnet2Id: !Ref 'PrivateSubnet2Id'
+        VpcId: !Ref 'VpcId'
+        InstanceTypes: !FindInMap
+          - PostgreSQLInformation
+          - AdminServerSize
+          - !Ref EnvironmentSize
+        EC2SecurityGroup: !GetAtt 'SharedResourcesStack.Outputs.AdminApiServerSecurityGroupID'
+        IamInstanceProfile: !GetAtt 'SharedResourcesStack.Outputs.ElasticBeanstalkEC2InstanceProfileName'
+        RDSSecret: !GetAtt 'SharedResourcesStack.Outputs.AuroraMasterSecret'
+        DomainName: !Ref 'DomainName'
+        S3BucketName: !Ref 'S3SourceBucket'
+        EdFiTenancyMode: !Ref 'EdFiTenancyMode'
+        DeploymentStrategy: !Ref DeploymentStrategy
+        UploadAndDeployArn: !GetAtt 'LambdaCoreStack.Outputs.BeanstalkUploadAndDeployFunctionArn'
+        SharedAlbArn: !GetAtt 'SharedResourcesStack.Outputs.SharedAlbArn'
+        SharedAlbAdminApiListenerArn: !GetAtt 'SharedResourcesStack.Outputs.SharedAlbAdminApiListenerArn'
+
+  CloudWatchDashboardStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-cloudwatch-dashboard.yml'
+      Parameters:
+        EnvLabel: !Ref 'EnvLabel'
+        DBClusterIdentifier: !GetAtt 'DatabaseStack.Outputs.DBClusterIdentifier'
+        BeanstalkEnvName: !GetAtt 'WebApiBeanstalkStack.Outputs.EnvironmentName'
+        DomainName: !Ref 'DomainName'
+        DatabaseType: !Ref DatabaseType
+        SharedAlbArn: !GetAtt 'SharedResourcesStack.Outputs.SharedAlbArn'
+        TargetGroupArn: !GetAtt 'WebApiBeanstalkStack.Outputs.TargetGroupArn'
+
+  SwaggerStack:
+    Condition: DeploySwaggerTemplate
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-swagger.yml'
+      Parameters:
+        EnvLabel: !Ref 'EnvLabel'
+        HostedZoneId: !Ref 'HostedZoneId'
+        S3SourceBucket: !Ref 'S3SourceBucket'
+        DomainName: !Ref 'DomainName'
+        SwaggerDefaultURL: !Sub 'https://swaggerui.${DomainName}/metadata/data/v3/resources/swagger.json'
+        CRHelperLambdaLayer: !GetAtt 'LambdaCoreStack.Outputs.CRHelperLambdaLayer'
+        Partner: !Ref 'Partner'
+
+Outputs:
+  WebApiDnsName:
+    Description: The DNS name of the ODS API suite that you should use to create a
+      CNAME/ALIAS DNS record to point to your own Domain e.g. mysite.com
+    Value: !GetAtt 'WebApiBeanstalkStack.Outputs.EndpointURL'
+  WebApiProdURL:
+    Description: The URL of the ODS/API endpoint, after DNS is updated
+    Value: !Join
+      - ''
+      - - https://
+        - !Ref 'DomainName'
+  AdminApiProdURL:
+    Condition: UseAdminApi
+    Description: The URL of the Admin Api.
+    Value: !Sub 'https://adminapi.${DomainName}'
+  SBEMetadataLambdaArn:
+    Condition: UseAdminApi
+    Description: Lambda ARN for SBE Meatadata Function
+    Value: !GetAtt 'LambdaCoreStack.Outputs.SBEMetadataLambdaArn'
+  ChangeVersionLambdaArn:
+    Condition: UsePublisher
+    Description: Lambda ARN for ChangeVersion Function
+    Value: !GetAtt 'LambdaCoreStack.Outputs.ChangeVersionLambdaArn'
+    Export:
+      Name: !Sub '${AWS::StackName}-ChangeVersionLambdaArn'
+  DatabaseEndpoint:
+    Description: The ODS API Database endpoint
+    Value: !GetAtt 'DatabaseStack.Outputs.RDSSQLEndpoint'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatabaseEndpoint'
+  DatabaseSecurityGroup:
+    Description: The ODS API Database Security Group
+    Value: !GetAtt 'SharedResourcesStack.Outputs.RDSSecurityGroupID'
+    Export:
+      Name: !Sub '${AWS::StackName}-DatabaseSecurityGroup'
+  DatabaseSubnetGroup:
+    Description: The ODS API Database Subnet Group
+    Value: !GetAtt 'DatabaseStack.Outputs.DBSubnetGroup'
+    Export:
+      Name: !Sub '${AWS::StackName}-DBSubnetGroup'
+  KmsKeyId:
+    Description: KMS Key ID.
+    Value: !GetAtt 'SharedResourcesStack.Outputs.KeyId'
+    Export:
+      Name: !Sub '${AWS::StackName}-KmsKeyId'
+  LambdaRestoreSgId:
+    Description: Security Group ID for Lambda Restore RDS function.
+    Value: !GetAtt 'SharedResourcesStack.Outputs.DatabaseRestoreLambdaFunctionSGID'
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaRestoreSgId'
+  VpcId:
+    Description: VPC Chosen for Starting Blocks Env.
+    Value: !Ref 'VpcId'
+    Export:
+      Name: !Sub '${AWS::StackName}-VpcId'
+  PrivateSubnet1Id:
+    Description: Private subnet 1 for Starting Blocks Env.
+    Value: !Ref 'PrivateSubnet1Id'
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet1Id'
+  PrivateSubnet2Id:
+    Description: Private subnet 2 for Starting Blocks Env.
+    Value: !Ref 'PrivateSubnet2Id'
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateSubnet2Id'
+  PublicSubnet1Id:
+    Description: Public subnet 1 for Starting Blocks Env.
+    Value: !Ref 'PublicSubnet1Id'
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet1Id'
+  PublicSubnet2Id:
+    Description: Public subnet 2 for Starting Blocks Env.
+    Value: !Ref 'PublicSubnet2Id'
+    Export:
+      Name: !Sub '${AWS::StackName}-PublicSubnet2Id'
+  EnvLabel:
+    Description: Name of Starting Blocks Environment.
+    Value: !Ref 'EnvLabel'
+    Export:
+      Name: !Sub '${AWS::StackName}-EnvLabel'
+  Partner:
+    Description: Name of Partner of Starting Blocks Environment.
+    Value: !Ref 'Partner'
+    Export:
+      Name: !Sub '${AWS::StackName}-Partner'
+  DomainName:
+    Description: Domain Name of Starting Blocks Environment.
+    Value: !Ref 'DomainName'
+    Export:
+      Name: !Sub '${AWS::StackName}-DomainName'
+  HostedZoneId:
+    Description: Route53 Hosted Zone Id containing the DNS records for the DomainName.
+    Value: !Ref 'HostedZoneId'
+    Export:
+      Name: !Sub '${AWS::StackName}-HostedZoneId'
+  WildcardCertificateArn:
+    Description: ARN of the Wildcard SSL certificate generated for this environment.
+    Value: !GetAtt 'SharedResourcesStack.Outputs.WildcardCertificateArn'
+    Export:
+      Name: !Sub '${AWS::StackName}-WildcardCertificateArn'
+  RdsSecretArn:
+    Description: Arn of the RDS Secret in Secrets Manager for this environment.
+    Value: !GetAtt 'SharedResourcesStack.Outputs.AuroraMasterSecret'
+    Export:
+      Name: !Sub '${AWS::StackName}-RdsSecretArn'
+  EdFiTenancyMode:
+    Description: EdFi tenancy mode configured for this environment.
+    Value: !Ref EdFiTenancyMode
+    Export:
+      Name: !Sub '${AWS::StackName}-EdFiTenancyMode'
+  S3SourceBucket:
+    Description: Name of S3 bucket containing CF templates for this environment.
+    Value: !Ref 'S3SourceBucket'
+    Export:
+      Name: !Sub '${AWS::StackName}-S3SourceBucket'
+  CRHelperLambdaLayer:
+    Value: !GetAtt 'LambdaCoreStack.Outputs.CRHelperLambdaLayer'
+    Description: Reference to the Custom Resource Helper Lambda Layer
+    Export:
+      Name: !Sub '${AWS::StackName}-CRHelperLambdaLayer'
+  BsWebApiApplicationName:
+    Value: !GetAtt 'WebApiBeanstalkStack.Outputs.ApplicationName'
+    Description: Beanstalk WebApi Application Name
+    Export:
+      Name: !Sub '${AWS::StackName}-BsWebApiApplicationName'
+  BsWebApiEnvironmentName:
+    Value: !GetAtt 'WebApiBeanstalkStack.Outputs.EnvironmentName'
+    Description: Beanstalk WebApi Environment Name
+    Export:
+      Name: !Sub '${AWS::StackName}-BsWebApiEnvironmentName'
+  SwaggerURL:
+    Description: The URL for swagger
+    Value:  !Sub 'swagger-ui.${DomainName}'

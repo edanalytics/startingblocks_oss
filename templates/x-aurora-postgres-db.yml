@@ -1,0 +1,582 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploys the Aurora Postgresql DB cluster and instance'
+
+###############################################################################
+# Parameters 
+###############################################################################   
+
+Parameters:
+  EnvLabel:
+    Default: test
+    Description: Provide a label for your environment to identify resources easier.
+    Type: String
+
+  PrivateSubnet1Id:
+    Description: ID of the private subnet 1 in Availability Zone 1 (e.g., subnet-a0246dcd)
+    Type: AWS::EC2::Subnet::Id
+  PrivateSubnet2Id:
+    Description: ID of the private subnet 2 in Availability Zone 2 (e.g., subnet-a0246dcd)
+    Type: AWS::EC2::Subnet::Id
+    
+  RDSSecurityGroupID:
+    Description: Security Group ID to use with this RDS (e.g., sg-7f16e910).
+    Type: AWS::EC2::SecurityGroup::Id
+    
+  DBUsername:
+    Description: Database master username
+    Type: String
+    MinLength: '1'
+    MaxLength: '16'
+    AllowedPattern: "^[a-zA-Z]+[0-9a-zA-Z_]*$"
+    ConstraintDescription: Must start with a letter. Only numbers, letters, and _ accepted. max length 16 characters
+    
+  # DBPassword:
+    # Description: Database master password
+    # Type: String
+    # NoEcho: 'true'
+
+  KmsKeyId:
+    Default: ''
+    Description: The KMS Key ID used to encrypt the database.
+    Type: String
+     
+  DBEngineVersion:
+    Description: Select Database Engine Version
+    Type: String
+    Default: "13.12"
+
+  DatabaseType:
+    Description: The database type for your environment (Only change to Serverless if DBEngineVersion is 13.7).
+    Type: String
+    Default: "Provisioned"
+    AllowedValues:
+      - "Provisioned"
+      - "Serverless"
+
+  ServerlessMinCapacity:
+    Description: Select the mininum amount of the Aurora Capacity Unit to launch.
+    Type: Number
+  
+  ServerlessMaxCapacity:
+    Description: Select the maximum amount of the Aurora Capacity Unit to launch.
+    Type: Number
+     
+  DBInstanceClass:
+    Default: db.t3.medium
+    Description: Database Instance Class. db.r5 instance classes are supported for Aurora PostgreSQL 10.6 or later. db.t3.medium instance class is supported for Aurora PostgreSQL 10.7 or later.
+    Type: String
+    AllowedValues:
+    - db.t3.medium
+    - db.t3.large
+    - db.t4g.medium
+    - db.t4g.large
+    - db.r6g.large
+    - db.r6g.xlarge
+    - db.r6g.2xlarge
+    
+  DeployReplica:
+    Description: Deploy two Aurora instances.
+    Type: String
+    Default: false
+    AllowedValues:
+      - true
+      - false
+
+  RDSSecret:
+    Type: String
+
+  SnsToSlackLambdaArn:
+    Type: String
+    Description: ARN of the SNS to Slack Lambda Function
+
+  CWRetentionLambdaArn:
+    Type: String
+    Description: ARN of the Set CloudWatch Retention Lambda Function
+    
+    
+###############################################################################
+# Parameter groups
+###############################################################################
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: DB Parameters
+        Parameters:
+          - DBUsername
+          - DBInstanceClass
+          - DBEngineVersion
+          - DeployReplica
+          - DatabaseType
+          - ServerlessMinCapacity
+          - ServerlessMaxCapacity
+      -
+        Label:
+          default: Networking
+        Parameters:
+          - PrivateSubnet1Id
+          - PrivateSubnet2Id
+          - RDSSecurityGroupID
+      - 
+        Label:
+          default: Tags
+        Parameters:
+          - EnvLabel
+
+
+      
+###############################################################################
+# Conditions
+############################################################################### 
+Conditions:
+  IsReplica: !Equals [!Ref DeployReplica, 'true']
+  IsServerless: !Equals 
+    - !Ref 'DatabaseType'
+    - 'Serverless'
+  IsProvisioned: !Equals 
+    - !Ref 'DatabaseType'
+    - 'Provisioned'
+  IsReplicaAndServerless: 
+    Fn::And:
+      - Condition: IsReplica
+      - Condition: IsServerless
+  IsReplicaAndProvisioned:
+    Fn::And:
+      - Condition: IsReplica
+      - Condition: IsProvisioned
+  EnableSlackNotifications: !Not [!Equals [!Ref SnsToSlackLambdaArn, '']]
+  
+  
+
+###############################################################################
+# Resources 
+###############################################################################   
+    
+Resources:
+
+  MonitoringIAMRole: 
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "monitoring.rds.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole
+        
+  DBSNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: !Ref KmsKeyId
+      Subscription: !If
+        - EnableSlackNotifications
+        - - Endpoint: !Ref 'SnsToSlackLambdaArn'
+            Protocol: lambda
+        - !Ref 'AWS::NoValue'
+      Tags:
+        -
+          Key: EnvLabel
+          Value: !Ref EnvLabel
+        
+  DBSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: !Sub '${AWS::StackName}-DBSubnetGroup'
+      SubnetIds: 
+        - !Ref 'PrivateSubnet1Id'
+        - !Ref 'PrivateSubnet2Id'            
+      
+  RDSDBClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: !Join [ "- ", [ "Aurora PG Cluster Parameter Group for  Cloudformation Stack ", !Ref 'AWS::StackName' ] ]
+      Family: !Sub 
+        - 'aurora-postgresql${MajorVersion}'
+        - MajorVersion: !Select [0, !Split [ '.', !Ref DBEngineVersion]]
+      Parameters:
+        rds.force_ssl: 1
+        
+  DBParamGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: !Join [ "- ", [ "Aurora PG Database Instance Parameter Group for Cloudformation Stack ", !Ref 'AWS::StackName' ] ]
+      Family: !Sub 
+        - 'aurora-postgresql${MajorVersion}'
+        - MajorVersion: !Select [0, !Split [ '.', !Ref DBEngineVersion]]
+      Parameters:
+        shared_preload_libraries: auto_explain,pg_stat_statements,pg_hint_plan,pgaudit,pg_cron
+        log_statement: "ddl"
+        log_connections: 1
+        log_disconnections: 1
+        log_lock_waits: 1
+        log_min_duration_statement: 5000
+        auto_explain.log_min_duration: 5000
+        auto_explain.log_verbose: 1
+        log_rotation_age: 1440
+        log_rotation_size: 102400
+        rds.log_retention_period: 10080
+        random_page_cost: 1
+        track_activity_query_size: 16384
+        idle_in_transaction_session_timeout: 7200000
+        statement_timeout: 7200000
+        search_path: '"$user",public'
+
+  AuroraKMSCMKAlias:
+    Type: 'AWS::KMS::Alias'
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    DependsOn: AuroraDBCluster
+    Properties:
+      AliasName: !Sub 'alias/${AuroraDBCluster}'
+      TargetKeyId: !Ref KmsKeyId
+
+  AuroraMasterUser:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: !Sub 'Master RDS User for ${EnvLabel} EdFi DB.'
+      Name: !Sub '/ed-fi/environments/${EnvLabel}/RDS/masteruser'
+      Type: String
+      Value: !Sub '${DBUsername}'
+
+  SecretAuroraClusterAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref RDSSecret
+      TargetId: !Ref AuroraDBCluster
+      TargetType: AWS::RDS::DBCluster
+        
+  AuroraDBCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: aurora-postgresql
+      CopyTagsToSnapshot: true 
+      EngineVersion: !Ref DBEngineVersion
+      ServerlessV2ScalingConfiguration: !If 
+          - IsServerless
+          - MinCapacity: !Ref ServerlessMinCapacity
+            MaxCapacity: !Ref ServerlessMaxCapacity
+          - !Ref 'AWS::NoValue'
+      Port: 5432
+      MasterUsername:
+        !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:username}}' ]]
+      MasterUserPassword:
+        !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:password}}' ]]
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+      - !Ref RDSSecurityGroupID  
+      BackupRetentionPeriod: 7
+      DBClusterParameterGroupName: !Ref RDSDBClusterParameterGroup
+      StorageEncrypted: true
+      KmsKeyId: !Ref KmsKeyId
+      EnableIAMDatabaseAuthentication: false
+      EnableCloudwatchLogsExports:
+        - postgresql
+      Tags:
+        -
+          Key: EnvLabel
+          Value: !Ref EnvLabel        
+        
+  AuroraDBFirstInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceClass: !If 
+          - IsServerless
+          - db.serverless
+          - Ref: DBInstanceClass
+      DBClusterIdentifier: !Ref AuroraDBCluster  
+      Engine: aurora-postgresql
+      EngineVersion: !Ref DBEngineVersion
+      DBParameterGroupName:
+        Ref: DBParamGroup
+      MonitoringInterval: 1
+      MonitoringRoleArn: !GetAtt MonitoringIAMRole.Arn
+      AutoMinorVersionUpgrade: false
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsKMSKeyId: !Ref KmsKeyId
+      PerformanceInsightsRetentionPeriod: 7
+      Tags:
+        -
+          Key: EnvLabel
+          Value: !Ref EnvLabel
+
+  AuroraDBSecondInstance:
+    Condition: IsReplica
+    Type: AWS::RDS::DBInstance
+    DependsOn: 
+      - AuroraDBFirstInstance
+    Properties: 
+      DBInstanceClass: !If 
+          - IsServerless
+          - db.serverless
+          - Ref: DBInstanceClass
+      DBClusterIdentifier: !Ref AuroraDBCluster  
+      Engine: aurora-postgresql
+      EngineVersion: !Ref DBEngineVersion
+      DBParameterGroupName:
+        Ref: DBParamGroup
+      MonitoringInterval: 1
+      MonitoringRoleArn: !GetAtt MonitoringIAMRole.Arn
+      AutoMinorVersionUpgrade: false
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+      PerformanceInsightsKMSKeyId: !Ref KmsKeyId
+      PerformanceInsightsRetentionPeriod: 7
+      Tags:
+        -
+          Key: EnvLabel
+          Value: !Ref EnvLabel
+          
+  AuroraClusterLogRetention:
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !Ref CWRetentionLambdaArn
+      logGroupName: !Sub '/aws/rds/cluster/${AuroraDBCluster}/postgresql'
+      retentionInDays: 365
+
+  ACUUtilizationAlarm1:
+    Condition: IsServerless
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref DBSNSTopic
+      AlarmDescription: 'ACU_Utilization'
+      Dimensions:
+      - Name: DBInstanceIdentifier
+        Value:
+          Ref: AuroraDBFirstInstance
+      MetricName: ACUUtilization
+      Statistic: Average
+      Namespace: 'AWS/RDS'
+      Threshold: '80'
+      Unit: Percent
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold'
+      Period: '60'
+      EvaluationPeriods: '5'
+      TreatMissingData: 'notBreaching'
+
+  ACUUtilizationAlarm2:
+    Condition: IsReplicaAndServerless
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref DBSNSTopic
+      AlarmDescription: 'ACU_Utilization'
+      Dimensions:
+      - Name: DBInstanceIdentifier
+        Value:
+          Ref: AuroraDBSecondInstance
+      MetricName: ACUUtilization
+      Statistic: Average
+      Namespace: 'AWS/RDS'
+      Threshold: '80'
+      Unit: Percent
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold'
+      Period: '60'
+      EvaluationPeriods: '5'
+      TreatMissingData: 'notBreaching'
+
+  CPUUtilizationAlarm1:
+    Condition: IsProvisioned
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref DBSNSTopic
+      AlarmDescription: 'CPU_Utilization'
+      Dimensions:
+      - Name: DBInstanceIdentifier
+        Value:
+          Ref: AuroraDBFirstInstance
+      MetricName: CPUUtilization
+      Statistic: Average
+      Namespace: 'AWS/RDS'
+      Threshold: '80'
+      Unit: Percent
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold'
+      Period: '60'
+      EvaluationPeriods: '5'
+      TreatMissingData: 'notBreaching'
+      
+  CPUUtilizationAlarm2:
+    Condition: IsReplicaAndProvisioned
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref DBSNSTopic
+      AlarmDescription: 'CPU_Utilization'
+      Dimensions:
+      - Name: DBInstanceIdentifier
+        Value:
+          Ref: AuroraDBSecondInstance
+      MetricName: CPUUtilization
+      Statistic: Average
+      Namespace: 'AWS/RDS'
+      Threshold: '80'
+      Unit: Percent
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold'
+      Period: '60'
+      EvaluationPeriods: '5'
+      TreatMissingData: 'notBreaching'
+      
+  MaxUsedTxIDsAlarm1:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref DBSNSTopic
+      AlarmDescription: 'Maximum Used Transaction IDs'
+      Dimensions:
+      - Name: DBInstanceIdentifier
+        Value:
+          Ref: AuroraDBFirstInstance
+      MetricName: 'MaximumUsedTransactionIDs'
+      Statistic: Average
+      Namespace: 'AWS/RDS'
+      Threshold: '600000000'
+      Unit: Count
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold'
+      Period: '60'
+      EvaluationPeriods: '5'
+      TreatMissingData: 'notBreaching'
+      
+  MaxUsedTxIDsAlarm2:
+    Condition: IsReplica
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref DBSNSTopic
+      AlarmDescription: 'Maximum Used Transaction IDs'
+      Dimensions:
+      - Name: DBInstanceIdentifier
+        Value:
+          Ref: AuroraDBSecondInstance
+      MetricName: 'MaximumUsedTransactionIDs'
+      Statistic: Average
+      Namespace: 'AWS/RDS'
+      Threshold: '600000000'
+      Unit: Count
+      ComparisonOperator: 'GreaterThanOrEqualToThreshold'
+      Period: '60'
+      EvaluationPeriods: '5'
+      TreatMissingData: 'notBreaching'
+
+  FreeLocalStorageAlarm1:
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref DBSNSTopic
+      AlarmDescription: 'Free Local Storage'
+      Dimensions:
+      - Name: DBInstanceIdentifier
+        Value:
+          Ref: AuroraDBFirstInstance
+      MetricName: 'FreeLocalStorage'
+      Statistic: Average
+      Namespace: 'AWS/RDS'
+      Threshold: '5368709120'
+      Unit: Bytes
+      ComparisonOperator: 'LessThanOrEqualToThreshold'
+      Period: '60'
+      EvaluationPeriods: '5'
+      TreatMissingData: 'notBreaching'
+      
+  FreeLocalStorageAlarm2:
+    Condition: IsReplica
+    Type: "AWS::CloudWatch::Alarm"
+    Properties:
+      ActionsEnabled: true
+      AlarmActions:
+        - !Ref DBSNSTopic
+      AlarmDescription: 'Free Local Storage'
+      Dimensions:
+      - Name: DBInstanceIdentifier
+        Value:
+          Ref: AuroraDBSecondInstance
+      MetricName: 'FreeLocalStorage'
+      Statistic: Average
+      Namespace: 'AWS/RDS'
+      Threshold: '5368709120'
+      Unit: Bytes
+      ComparisonOperator: 'LessThanOrEqualToThreshold'
+      Period: '60'
+      EvaluationPeriods: '5'
+      TreatMissingData: 'notBreaching'    
+      
+  DatabaseClusterEventSubscription:
+    Type: 'AWS::RDS::EventSubscription'
+    Properties:
+      EventCategories:
+      - failover
+      - failure
+      - notification
+      SnsTopicArn: !Ref DBSNSTopic
+      SourceIds: [!Ref AuroraDBCluster]
+      SourceType: 'db-cluster'
+
+  DatabaseInstanceEventSubscription:
+    Type: 'AWS::RDS::EventSubscription'
+    Properties:
+      EventCategories:
+      - availability
+      - configuration change
+      - deletion
+      - failover
+      - failure
+      - maintenance
+      - notification
+      - recovery
+      SnsTopicArn: !Ref DBSNSTopic
+      SourceIds: 
+      - !Ref AuroraDBFirstInstance
+      - !If [IsReplica, !Ref AuroraDBSecondInstance, !Ref "AWS::NoValue"]
+      SourceType: 'db-instance'
+      
+  DBParameterGroupEventSubscription:
+    Type: 'AWS::RDS::EventSubscription'
+    Properties:
+      EventCategories:
+      - configuration change
+      SnsTopicArn: !Ref DBSNSTopic
+      SourceIds: [!Ref DBParamGroup]
+      SourceType: 'db-parameter-group'
+   
+
+
+###############################################################################
+# Outputs 
+###############################################################################   
+Outputs:
+  RDSSQLEndpoint:
+    Description: 'Aurora Cluster/Writer Endpoint'
+    Value: !GetAtt 'AuroraDBCluster.Endpoint.Address'
+  ReaderEndpoint:
+    Description: 'Aurora Reader Endpoint'
+    Value: !GetAtt 'AuroraDBCluster.ReadEndpoint.Address'
+  DBClusterIdentifier:
+    Description: 'Name of the Aurora Cluster'
+    Value: !Ref 'AuroraDBCluster'
+  DBSubnetGroup:
+    Description: 'Name of the subnet group'
+    Value: !Ref DBSubnetGroup

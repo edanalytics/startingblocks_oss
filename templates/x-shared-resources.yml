@@ -1,0 +1,578 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: 'AWS::LanguageExtensions'
+Description: >-
+  Deploys IAM, KMS, Security Groups, Secrets, Certificate, ALB, and Route53 resources
+Parameters:
+  EnvLabel:
+    Default: test
+    Type: String
+    Description: Provide a label for your environment to identify resources easier.
+  VpcId:
+    Default: ''
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID to create the security groups within the network
+  SSHServerParentStack:
+    Description: Stack name for the existing SSH server parent stack
+    Type: String
+  WebACLArn:
+    Description: WAF ARN
+    Type: String
+  AdminInterface:
+    Description: The interface that will provide management functions for this environment.
+    Type: String
+    Default: "Ed-Fi Admin API"
+    AllowedValues:
+      - "Ed-Fi Admin API"
+      - "None"
+  AdminApiCIDRs:
+    Description: Network Address ranges (CIDR) to allow connections to the Admin Api
+    Type: CommaDelimitedList
+  PublicSubnet1Id:
+    Description: Public Subnet ID 1 located in Availability Zone 1
+    Type: AWS::EC2::Subnet::Id
+  PublicSubnet2Id:
+    Description: Public Subnet ID 2 located in Availability Zone 2
+    Type: AWS::EC2::Subnet::Id
+  DomainName:
+    Type: String
+    Description: Domain Name for the environment
+  HostedZoneId:
+    Description: A Route53 HostedZone is required. Select the zone for this environment.
+    Type: AWS::Route53::HostedZone::Id
+  SSLPolicy:
+    Description: Policy to determine which ssl/tls ciphers are accepted.
+    Type: String
+
+Conditions:
+  AttachWAF:
+    !Not [!Equals [!Ref WebACLArn, '']]
+  UseAdminApi: !Equals [!Ref 'AdminInterface', "Ed-Fi Admin API"]
+  UseSSHParentStack: !Not 
+    - !Equals
+      - !Ref SSHServerParentStack
+      - ''
+
+Resources:
+  KMSKey:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub 'KMS key for the ${EnvLabel} Environment'
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Id: !Sub '${EnvLabel}-edfi-kms-key'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: kms:*
+            Resource: '*'
+          - Effect: Allow
+            Principal:
+              AWS: '*'
+            Action:
+            - 'kms:Encrypt'
+            - 'kms:Decrypt'
+            - 'kms:ReEncrypt*'
+            - 'kms:GenerateDataKey*'
+            - 'kms:CreateGrant'
+            - 'kms:ListGrants'
+            - 'kms:DescribeKey'
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:CallerAccount': !Ref 'AWS::AccountId'
+                'kms:ViaService': !Sub 'rds.${AWS::Region}.amazonaws.com'
+          - Effect: Allow
+            Principal:
+              Service: 
+                - events.rds.amazonaws.com
+                - cloudwatch.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:GenerateDataKey*
+            Resource: '*'
+      KeyUsage: ENCRYPT_DECRYPT
+  KeyAlias:
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub 'alias/${EnvLabel}-edfi-kms-key-${AWS::StackName}'
+      TargetKeyId: !Ref 'KMSKey'
+
+  WebApiServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvLabel}-WebApi-Servers'
+      GroupDescription: !Sub 'EdFi EC2 application servers for the ${EnvLabel} environment'
+      VpcId: !Ref 'VpcId'
+  AdminApiServerSecurityGroup:
+    Condition: UseAdminApi
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvLabel}-AdminApi-Server'
+      GroupDescription: !Sub 'EdFi EC2 Admin Api server for the ${EnvLabel} environment'
+      VpcId: !Ref 'VpcId'
+  DatabaseLambdaFunctionRestoreSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Lambda DB Restore Function Security Group for the ${VpcId} vpc'
+      GroupName: !Sub '${EnvLabel}-LambdaDbRestore-Function'
+      VpcId: !Ref 'VpcId'
+  LambdaDefaultSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub 'Lambda Function default Security Group for the ${VpcId} vpc'
+      GroupName: !Sub '${EnvLabel}-LambdaDefault'
+      VpcId: !Ref 'VpcId'
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvLabel}-RDS-Servers'
+      GroupDescription: !Sub 'Rules to allow access to RDS in the ${EnvLabel} environment'
+      VpcId: !Ref 'VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref 'WebApiServerSecurityGroup'
+          Description: !Sub 'Allow access from the ${EnvLabel} environment Web Api servers'
+        - !If
+          - UseAdminApi
+          - IpProtocol: tcp
+            FromPort: 5432
+            ToPort: 5432
+            SourceSecurityGroupId: !Ref 'AdminApiServerSecurityGroup'
+            Description: !Sub 'Allow access from the ${EnvLabel} environment Admin Api servers'
+          - !Ref AWS::NoValue
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref 'DatabaseLambdaFunctionRestoreSG'
+          Description: !Sub 'Allow access from the ${EnvLabel} environment DB Restore Lambda Function'
+        - !If
+          - UseSSHParentStack
+          - IpProtocol: tcp
+            FromPort: 5432
+            ToPort: 5432
+            SourceSecurityGroupId: {'Fn::ImportValue': !Sub '${SSHServerParentStack}-SecurityGroup'}
+            Description: 'Allow access from the SSH server'
+          - !Ref AWS::NoValue
+  ElasticBeanstalkServiceRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - elasticbeanstalk.amazonaws.com
+            Action: 
+              - 'sts:AssumeRole'
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AWSElasticBeanstalkEnhancedHealth
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkManagedUpdatesCustomerRolePolicy
+      RoleName: !Sub '${EnvLabel}-elasticbeanstalk-service-role'
+      Policies:
+        - PolicyName: KMS
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - kms:Decrypt
+                  - kms:GenerateDataKey*
+                Resource: !GetAtt 'KMSKey.Arn'
+  ElasticBeanstalkEC2Role:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - ec2.amazonaws.com
+            Action: 
+              - 'sts:AssumeRole'
+      ManagedPolicyArns: 
+        - 'arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier'
+        - 'arn:aws:iam::aws:policy/AWSElasticBeanstalkMulticontainerDocker'
+        - 'arn:aws:iam::aws:policy/AWSElasticBeanstalkWorkerTier'
+        - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+      RoleName: !Sub '${EnvLabel}-elasticbeanstalk-ec2-role'
+      Policies:
+        - PolicyName: 'SecretsManager'
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref AuroraMasterSecret
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: 
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvLabel}-AdminApiSecret-*'
+                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvLabel}-WebApiSecret-*'
+              - Effect: Allow
+                Action:
+                  - dynamodb:BatchGetItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants'
+        - PolicyName: 'AttachWebACL'
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: elasticloadbalancing:SetWebACL
+                Resource: '*'
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ed-fi/beanstalk/environments/${EnvLabel}-WebApi-Prod/parameters/*'
+        - PolicyName: 'CloudWatchAgent'
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: Allow
+                Action: ec2:DescribeTags
+                Resource: '*'
+        - PolicyName: 'AutoScaling'
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: Allow
+                Action: autoscaling:SetInstanceHealth
+                Resource: '*'
+  ElasticBeanstalkEC2InstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ElasticBeanstalkEC2Role
+  # ElasticBeanstalkEC2RoleWAFManagedPolicy:
+  #   Condition: AttachWAF
+  #   Type: 'AWS::IAM::ManagedPolicy'
+  #   Properties:
+  #     PolicyDocument:
+  #       Version: '2012-10-17'
+  #       Statement:
+  #         - Sid: WAF
+  #           Effect: Allow
+  #           Action:
+  #             - 'wafv2:AssociateWebACL'
+  #           Resource: !Ref 'WebACLArn'
+  #     Roles: 
+  #       - !Ref ElasticBeanstalkEC2Role
+  AuroraMasterSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${EnvLabel}-AuroraMasterSecret'
+      Description: !Sub 'Aurora PostgreSQL Master User Secret for EdFi Environment ${EnvLabel}'
+      Tags:
+        -
+          Key: EnvLabel
+          Value: !Ref EnvLabel
+        -
+          Key: DatabaseEngine
+          Value: 'Aurora PostgreSQL'
+        -
+          Key: StackID
+          Value: !Ref 'AWS::StackId'
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "postgres"}'
+        GenerateStringKey: "password"
+        ExcludePunctuation: true
+        PasswordLength: 32
+  AuroraSecretResourcePolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !Ref AuroraMasterSecret
+      ResourcePolicy:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Deny"
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "secretsmanager:DeleteSecret"
+            Resource: "*"
+
+  TenantsDDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties: 
+      AttributeDefinitions: 
+        - 
+          AttributeName: 'Name'
+          AttributeType: 'S'
+      BillingMode: PAY_PER_REQUEST
+      KeySchema: 
+        - 
+          AttributeName: 'Name'
+          KeyType: 'HASH'
+      TableName: !Sub '${EnvLabel}-tenants'
+      Tags: 
+        - Key: Environment
+          Value: !Ref 'EnvLabel'
+
+  WildcardCertificate:
+    Type: "AWS::CertificateManager::Certificate"
+    Properties:
+      DomainName: !Sub '*.${DomainName}'
+      SubjectAlternativeNames:
+        - !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+
+  SharedAlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub '${EnvLabel}-shared-alb'
+      GroupDescription: !Sub 'Shared application load balancer for the ${EnvLabel} environment'
+      VpcId: !Ref 'VpcId'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+          Description: 'Allow HTTP access'
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+          Description: 'Allow HTTPS access'
+
+  'Fn::ForEach::AdminApiIngress':
+    - CidrIp
+    - !Ref AdminApiCIDRs
+    - 'AdminApiIngress&{CidrIp}':
+        Type: 'AWS::EC2::SecurityGroupIngress'
+        Condition: UseAdminApi
+        Properties:
+          Description: Admin API
+          GroupId: !Ref SharedAlbSecurityGroup
+          IpProtocol: tcp
+          FromPort: '8443'
+          ToPort: '8443'
+          CidrIp: !Ref CidrIp
+
+  SharedAlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      IpAddressType: ipv4
+      LoadBalancerAttributes: 
+        - Key: waf.fail_open.enabled
+          Value: true
+      Name: !Sub '${EnvLabel}-shared-alb'
+      Scheme: internet-facing
+      SecurityGroups: 
+        - !Ref SharedAlbSecurityGroup
+      Subnets: 
+        - !Ref PublicSubnet1Id
+        - !Ref PublicSubnet2Id
+      Type: application
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvLabel
+        - Key: EdFiApplication
+          Value: 'Shared'
+
+  SharedAlbWafAssociation:
+    Condition: AttachWAF
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Ref SharedAlb
+      WebACLArn: !Ref WebACLArn
+
+  SharedAlbRoute53Record:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt SharedAlb.DNSName
+        HostedZoneId: !GetAtt SharedAlb.CanonicalHostedZoneID
+      Name: !Ref DomainName
+      HostedZoneId: !Ref HostedZoneId
+      Type: A
+
+  SharedAlbWildcardRoute53record:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt SharedAlb.DNSName
+        HostedZoneId: !GetAtt SharedAlb.CanonicalHostedZoneID
+      Name: !Sub '*.${DomainName}'
+      HostedZoneId: !Ref HostedZoneId
+      Type: A
+
+  SharedAlbHTTPListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref SharedAlb
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '443'
+            StatusCode: 'HTTP_301'
+
+  # Set wide priority 1 rule so other rules can't ever match on port 80
+  SharedAlbHTTPRedirectRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - RedirectConfig: 
+            Protocol: HTTPS
+            Port: '443'
+            StatusCode: 'HTTP_301'
+          Type: redirect
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - '/*'
+      ListenerArn: !Ref SharedAlbHTTPListener
+      Priority: 1  
+
+  SharedAlbHTTPSListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref SharedAlb
+      Port: 443
+      Protocol: HTTPS
+      SslPolicy: !Ref SSLPolicy
+      Certificates:
+        - CertificateArn: !Ref WildcardCertificate
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '401'
+            ContentType: 'application/json'
+            MessageBody: '{ "message": "Access to this URL is prohibited." }'
+
+  SharedAlbAdminApiListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: UseAdminApi
+    Properties:
+      LoadBalancerArn: !Ref SharedAlb
+      Port: 8443
+      Protocol: HTTPS
+      SslPolicy: !Ref SSLPolicy
+      Certificates:
+        - CertificateArn: !Ref WildcardCertificate
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '401'
+            ContentType: 'application/json'
+            MessageBody: '{ "message": "Access to this URL is prohibited." }'
+
+  # Blocked by security group, and fixed-response rule.  Will house Beanstalk default rules.
+  SharedAlbDummyListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref SharedAlb
+      Port: 14443
+      Protocol: HTTPS
+      SslPolicy: !Ref SSLPolicy
+      Certificates:
+        - CertificateArn: !Ref WildcardCertificate
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '401'
+            ContentType: 'application/json'
+            MessageBody: '{ "message": "Access to this URL is prohibited." }'
+
+  # Set wide priority 1 rule so other rules can't ever match
+  SharedAlbDummyFixedResponseRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: '401'
+            ContentType: 'application/json'
+            MessageBody: '{ "message": "Access to this URL is prohibited." }'
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - '/*'
+      ListenerArn: !Ref SharedAlbDummyListener
+      Priority: 1  
+
+  # For MTC
+  EdFiWebApiURL:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Description: !Sub 'The URL of the EdFi ODS/API endpoint ${EnvLabel}.'
+      Name: !Sub '/ed-fi/environments/${EnvLabel}/WebApi/url'
+      Type: String
+      Value: !Sub 'https://${DomainName}'
+
+Outputs:
+  WebApiServerSecurityGroupID:
+    Description: Security Group ID for the EC2 Instances for WebApi Servers
+    Value: !Ref 'WebApiServerSecurityGroup'
+  AdminApiServerSecurityGroupID:
+    Condition: UseAdminApi
+    Description: Security Group ID for the EC2 Instance of an Admin Api
+    Value: !Ref 'AdminApiServerSecurityGroup'
+  DatabaseRestoreLambdaFunctionSGID:
+    Description: Security Group ID for the Lambda DB Restore Function in this VPC
+    Value: !Ref 'DatabaseLambdaFunctionRestoreSG'
+  LambdaDefaultSGID:
+    Description: Default Security Group ID for Lambda Functions in this VPC
+    Value: !Ref 'LambdaDefaultSG'
+  RDSSecurityGroupID:
+    Description: Security Group ID for the RDS
+    Value: !Ref 'RDSSecurityGroup'
+  KeyId:
+    Description: KMS Key ID
+    Value: !Ref 'KMSKey'
+  KeyArn:
+    Description: Key ARN.
+    Value: !GetAtt 'KMSKey.Arn'
+  ElasticBeanstalkServiceRoleName:
+    Description: Name of the service role for Elastic Beanstalk
+    Value: !Ref ElasticBeanstalkServiceRole
+  ElasticBeanstalkEC2InstanceProfileName:
+    Description: Name of the instance profile for Elastic Beanstalk to use with EC2 machines
+    Value: !Ref 'ElasticBeanstalkEC2InstanceProfile'
+  AuroraMasterSecret:
+    Description: Secrets Manager Secret containing database credentials
+    Value: !Ref 'AuroraMasterSecret'
+  TenantsDDBTableArn:
+    Description: ARN of the DynamoDB table holding tenant information.
+    Value: !GetAtt 'TenantsDDBTable.Arn'
+  WildcardCertificateArn:
+    Description: ARN of the Wildcard SSL certificate generated for this environment.
+    Value: !Ref 'WildcardCertificate'
+  SharedAlbArn:
+    Description: The ARN of the Shared ALB
+    Value: !GetAtt 'SharedAlb.LoadBalancerArn'
+  SharedAlbHTTPSListenerArn:
+    Description: The ARN of the 443 listener on the Shared ALB
+    Value: !Ref SharedAlbHTTPSListener
+  SharedAlbAdminApiListenerArn:
+    Condition: UseAdminApi
+    Description: The ARN of the 8443 listener on the Shared ALB
+    Value: !Ref SharedAlbAdminApiListener
+  SharedAlbDummyListenerArn:
+    Description: The ARN of the 14443 listener on the Shared ALB
+    Value: !Ref SharedAlbDummyListener

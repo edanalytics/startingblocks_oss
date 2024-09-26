@@ -1,0 +1,616 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Deploys CloudWatch Dashboard for monitoring the StartingBlocks Environment.
+Parameters:
+  EnvLabel:
+    Default: ''
+    Description: Provide a label for your environment to identify resources easier.
+    Type: String
+  DBClusterIdentifier:
+    Description: Database Cluster Identifier
+    Type: String
+  BeanstalkEnvName:
+    Description: Name of Beanstalk Environment
+    Type: String
+  DomainName:
+    Description: The fully qualified domain name to be used for this ODS API environment. (e.g. edfi.domain.com)  MUST be part of the Route53 Hosted Zone.
+    Type: String
+  DatabaseType:
+    Description: (Only change to Serverless if PostgresVersion is Thirteen).
+    Type: String
+    AllowedValues:
+      - "Provisioned"
+      - "Serverless"
+  SharedAlbArn:
+    Description: ARN of the shared ALB
+    Type: String
+  TargetGroupArn:
+    Description: ARN of the target group
+    Type: String
+
+Conditions:
+  IsServerlessDB: !Equals 
+    - !Ref DatabaseType
+    - "Serverless"
+
+Resources:
+
+  CloudWatchErrorsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+        DashboardName: !Sub '${EnvLabel}-errors'
+        DashboardBody: !Sub
+        - |
+            {
+                "widgets": [
+                    {
+                        "height": 6,
+                        "width": 18,
+                        "y": 0,
+                        "x": 6,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @responsecode not like /2\\d\\d/\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| fields replace(match, \"/data/v3/ed-fi/\", \"\") as resource\n| stats count(*) as total by concat(@method, \" \", resource, \" \", @responsecode)\n| sort total desc",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Method/Resource/Response Distribution (Errors Only)",
+                            "view": "pie"
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 6,
+                        "y": 0,
+                        "x": 0,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [ "AWS/ApplicationELB", "HTTPCode_ELB_4XX_Count", "LoadBalancer", "${ALBIdentifier}" ],
+                                [ ".", "HTTPCode_Target_5XX_Count", ".", "." ],
+                                [ ".", "HTTPCode_Target_2XX_Count", ".", "." ],
+                                [ ".", "HTTPCode_ELB_3XX_Count", ".", "." ],
+                                [ ".", "HTTPCode_Target_4XX_Count", ".", "." ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "stat": "Sum",
+                            "period": 60,
+                            "title": "ALB Response Codes"
+                        }
+                    },
+                    {
+                        "height": 13,
+                        "width": 16,
+                        "y": 12,
+                        "x": 0,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n#| filter @agent not like \"ELB-HealthChecker\"\n| filter @responsecode not like /2\\d\\d/\n| filter @host like /${DomainName}/\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<longresource>^(\\/[^\\/]+){1,4})/\n| fields replace(longresource, \"/data/v3/ed-fi/\", \"\") as resource\n| fields replace(@host, \".${DomainName}\", \"\") as application\n| stats count(*) as count by application, @tenant, @method, resource, @responsecode\n#| limit 20\n| sort by application asc, count desc",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Errors Dashboard",
+                            "view": "table"
+                        }
+                    },
+                    {
+                        "height": 13,
+                        "width": 8,
+                        "y": 12,
+                        "x": 16,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @responsecode not like /2\\d\\d/\n| fields replace(@host, \".${DomainName}\", \"\") as application\n| stats count(*) as total by application, @tenant\n| sort total desc\n#| limit 10",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Total errors by application and tenant",
+                            "view": "table"
+                        }
+                    },
+                    {
+                        "type": "log",
+                        "x": 0,
+                        "y": 6,
+                        "width": 24,
+                        "height": 6,
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message, @logStream, @log\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| sort @responsetime desc\n| display @datetime, @host, @tenant, @method, @request, @responsecode, @responsetime, @correlationid\n| limit 10",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "view": "table",
+                            "title": "Top 10 slow responses"
+                        }
+                    }
+                ]
+            }
+        - ALBIdentifier: !Join
+            - '/'
+            -   - !Select [1, !Split ["/", !Ref SharedAlbArn]]
+                - !Select [2, !Split ["/", !Ref SharedAlbArn]]
+                - !Select [3, !Split ["/", !Ref SharedAlbArn]]
+  CloudWatchDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref 'EnvLabel'
+      DashboardBody: !Sub
+        - |
+            {
+                "widgets": [
+                    {
+                        "height": 3,
+                        "width": 6,
+                        "y": 0,
+                        "x": 0,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [
+                                    "AWS/ApplicationELB",
+                                    "RequestCount",
+                                    "LoadBalancer",
+                                    "${ALBIdentifier}"
+                                ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "stat": "Sum",
+                            "period": 60,
+                            "title": "ALB Requests per minute"
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 6,
+                        "y": 0,
+                        "x": 6,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [ "AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", "${ALBIdentifier}" ],
+                                [ "...", { "stat": "Maximum" } ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "title": "ALB Target Response Time",
+                            "period": 60,
+                            "stat": "Average"
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 6,
+                        "y": 0,
+                        "x": 12,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [
+                                    "AWS/EC2",
+                                    "NetworkIn",
+                                    "AutoScalingGroupName",
+                                    "${ASGName}"
+                                ],
+                                [
+                                    ".",
+                                    "NetworkOut",
+                                    ".",
+                                    "."
+                                ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "stat": "Sum",
+                            "period": 60,
+                            "title": "ASG Network In/Out"
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 6,
+                        "y": 0,
+                        "x": 18,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [
+                                    "AWS/ApplicationELB",
+                                    "HTTPCode_ELB_4XX_Count",
+                                    "LoadBalancer",
+                                    "${ALBIdentifier}"
+                                ],
+                                [
+                                    ".",
+                                    "HTTPCode_Target_5XX_Count",
+                                    ".",
+                                    "."
+                                ],
+                                [
+                                    ".",
+                                    "HTTPCode_Target_2XX_Count",
+                                    ".",
+                                    "."
+                                ],
+                                [
+                                    ".",
+                                    "HTTPCode_ELB_3XX_Count",
+                                    ".",
+                                    "."
+                                ],
+                                [
+                                    ".",
+                                    "HTTPCode_Target_4XX_Count",
+                                    ".",
+                                    "."
+                                ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "stat": "Sum",
+                            "period": 60,
+                            "title": "ALB Response Codes"
+                        }
+                    },
+                    {
+                        "height": ${CpuUtilizationHeight},
+                        "width": 6,
+                        "y": 6,
+                        "x": 0,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [
+                                    "AWS/RDS",
+                                    "CPUUtilization",
+                                    "DBClusterIdentifier",
+                                    "${DBClusterIdentifier}",
+                                    { "label": "RDS CPU Utilization" }
+                                ],
+                                [
+                                    "AWS/EC2",
+                                    "CPUUtilization",
+                                    "AutoScalingGroupName",
+                                    "${ASGName}",
+                                    { "label": "EC2 ASG Average CPUUtilization" }
+                                ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "title": "CPU Utilization",
+                            "stat": "Average",
+                            "period": 60
+                        }
+                    },
+                    ${ServerlessDatabaseCapacityWidget}
+                    {
+                        "height": 3,
+                        "width": 6,
+                        "y": 6,
+                        "x": 12,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [
+                                    "AWS/RDS",
+                                    "DatabaseConnections",
+                                    "DBClusterIdentifier",
+                                    "${DBClusterIdentifier}"
+                                ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "title": "RDS Database Connections",
+                            "stat": "Average",
+                            "period": 60
+                        }
+                    },
+                    {
+                        "height": 3,
+                        "width": 6,
+                        "y": 9,
+                        "x": 12,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [
+                                    "AWS/RDS",
+                                    "ReadIOPS",
+                                    "DBClusterIdentifier",
+                                    "${DBClusterIdentifier}"
+                                ],
+                                [
+                                    ".",
+                                    "WriteIOPS",
+                                    ".",
+                                    "."
+                                ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "stat": "Average",
+                            "period": 60,
+                            "title": "RDS Read/Write IOPS"
+                        }
+                    },
+                    {
+                        "type": "metric",
+                        "x": 6,
+                        "y": 6,
+                        "width": 6,
+                        "height": 3,
+                        "properties": {
+                            "metrics": [
+                                [ { "expression": "SEARCH('{CWAgent,AWSEBEnvironmentName,InstanceId} AWSEBEnvironmentName=\"${BeanstalkEnvName}\" MetricName=\"mem_used_percent\"', 'Average', 60)", "id": "e1", "period": 60 } ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "stat": "Average",
+                            "period": 60,
+                            "title": "EC2 Memory Used %"
+                        }
+                    },
+                    {
+                        "type": "metric",
+                        "x": 6,
+                        "y": 9,
+                        "width": 6,
+                        "height": 3,
+                        "properties": {
+                            "metrics": [
+                                [ { "expression": "SEARCH('{CWAgent,AWSEBEnvironmentName,InstanceId,device,fstype,path} AWSEBEnvironmentName=\"${BeanstalkEnvName}\"', 'Average', 60)", "id": "e1", "period": 60 } ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "stat": "Average",
+                            "period": 60,
+                            "title": "EC2 Disk Used %"
+                        }
+                    },
+                    {
+                        "height": 16,
+                        "width": 24,
+                        "y": 24,
+                        "x": 0,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/eb-docker/containers/eb-current-app/stdouterr.log' | fields @timestamp, @message | sort @timestamp desc | limit 100",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "view": "table"
+                        }
+                    },
+                    {
+                        "height": 3,
+                        "width": 6,
+                        "y": 3,
+                        "x": 0,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [
+                                    "AWS/ApplicationELB",
+                                    "HealthyHostCount",
+                                    "TargetGroup",
+                                    "${TargetGroupIdentifier}",
+                                    "LoadBalancer",
+                                    "${ALBIdentifier}"
+                                ],
+                                [
+                                    ".",
+                                    "UnHealthyHostCount",
+                                    ".",
+                                    ".",
+                                    ".",
+                                    "."
+                                ]
+                            ],
+                            "period": 60,
+                            "region": "${AWS::Region}",
+                            "stat": "Average",
+                            "title": "ALB Target Group",
+                            "yAxis": {
+                                "left": {
+                                    "min": 0
+                                }
+                            },
+                            "view": "timeSeries",
+                            "stacked": false
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 8,
+                        "y": 12,
+                        "x": 0,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @request, @protocol, @responsecode, @size, @agent\n| filter @agent not like \"ELB-HealthChecker\"\n| parse @method \"GE*\" as MGET\n| parse @method \"POS*\" as MPOST\n| parse @method \"PU*\" as MPUT\n| parse @method \"DELET*\" as MDELETE\n| stats count(MGET) as GET, count(MPOST) as POST, count(MPUT) as PUT, count(MDELETE) as DELETE by bin(1m)",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "HTTP Methods",
+                            "view": "timeSeries"
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 16,
+                        "y": 12,
+                        "x": 8,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| stats count(*) as total by concat(@method, \" \", match, \" \", @responsecode)\n| sort total desc",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Method/Resource/Response Distribution",
+                            "view": "pie"
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 7,
+                        "y": 18,
+                        "x": 0,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| stats count(*) as total by @host, @tenant\n| sort total desc\n| limit 10",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Requests by host and tenant",
+                            "view": "table"
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 17,
+                        "y": 18,
+                        "x": 7,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @request not like \"/oauth/token\"\n| sort @timestamp desc\n| limit 10\n| display @timestamp, @method, @request, @responsecode, @host, @tenant, @responsetime, @size, @agent, @xforwardedfor, @correlationid",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Log group: /aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log",
+                            "view": "table"
+                        }
+                    },
+                    {
+                        "height": 6,
+                        "width": 6,
+                        "y": 6,
+                        "x": 18,
+                        "type": "metric",
+                        "properties": {
+                            "metrics": [
+                                [ "AWS/RDS", "FreeableMemory", "DBClusterIdentifier", "${DBClusterIdentifier}" ]
+                            ],
+                            "view": "timeSeries",
+                            "stacked": false,
+                            "region": "${AWS::Region}",
+                            "title": "RDS Freeable Memory",
+                            "stat": "Average",
+                            "period": 60
+                        }
+                    }
+                ]
+            }
+        - ASGName: !Sub '{{resolve:ssm:/ed-fi/beanstalk/environments/${BeanstalkEnvName}/parameters/AWSEBAutoScalingGroup}}'
+          DBClusterIdentifier: !Ref 'DBClusterIdentifier'
+          ALBIdentifier: !Join
+            - '/'
+            - - !Select [1, !Split ["/", !Ref SharedAlbArn]]
+              - !Select [2, !Split ["/", !Ref SharedAlbArn]]
+              - !Select [3, !Split ["/", !Ref SharedAlbArn]]
+          BeanstalkEnvName: !Ref 'BeanstalkEnvName'
+          TargetGroupIdentifier: !Select [5, !Split [":", !Ref TargetGroupArn]]
+          CpuUtilizationHeight: !If [IsServerlessDB,  3, 6]
+          ServerlessDatabaseCapacityWidget: !If 
+            - IsServerlessDB
+            - !Sub |
+              {
+                  "type": "metric",
+                  "x": 0,
+                  "y": 9,
+                  "width": 6,
+                  "height": 3,
+                  "properties": {
+                      "view": "timeSeries",
+                      "stacked": false,
+                      "metrics": [
+                          [ "AWS/RDS", "ServerlessDatabaseCapacity", "DBClusterIdentifier", "${DBClusterIdentifier}", { "period": 60 } ]
+                      ],
+                      "region": "${AWS::Region}",
+                      "title": "Serverless Database ACU's"
+                  }
+              },
+            - ''
+  CloudWatchAnalyticsDashboard: 
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+        DashboardName: !Sub '${EnvLabel}-request-analytics'
+        DashboardBody: !Sub
+          |
+            {
+                "widgets": [
+                    {
+                        "height": 8,
+                        "width": 12,
+                        "y": 0,
+                        "x": 0,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| stats count(*) as total by concat(@method, \" \", match, \" \", @responsecode)\n| sort total desc",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Method/Resource/Response Distribution",
+                            "view": "pie"
+                        }
+                    },
+                    {
+                        "height": 8,
+                        "width": 12,
+                        "y": 0,
+                        "x": 12,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @request, @protocol, @responsecode, @size, @agent\n| filter @agent not like \"ELB-HealthChecker\"\n| parse @method \"GE*\" as MGET\n| parse @method \"POS*\" as MPOST\n| parse @method \"PU*\" as MPUT\n| parse @method \"DELET*\" as MDELETE\n| stats count(MGET) as GET, count(MPOST) as POST, count(MPUT) as PUT, count(MDELETE) as DELETE by bin(1m)",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "HTTP Methods",
+                            "view": "timeSeries"
+                        }
+                    },
+                    {
+                        "height": 8,
+                        "width": 12,
+                        "y": 8,
+                        "x": 0,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| stats count(*) as total by @host, @tenant\n| sort total desc\n| limit 10",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Requests by host and tenant",
+                            "view": "table"
+                        }
+                    },
+                    {
+                        "height": 8,
+                        "width": 12,
+                        "y": 8,
+                        "x": 12,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message \n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime \n| parse @longrequest '/*/*/*/*/*' as @tenant, @data, @version, @namespace, @longresource \n| filter @agent not like \"ELB-HealthChecker\" \n| filter @longrequest not like \"/oauth/token\" \n| filter @longrequest not like \"swagger.json\" \n| filter @longresource like \"\" and @tenant like \"\" \n| parse @longresource /(?<@resource>^[^?]+)/ \n| stats count(*) as total by @tenant, @method, @resource \n| sort total desc \n| limit 100",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Requests by tenant, method & resource",
+                            "view": "table"
+                        }
+                    },
+                    {
+                        "height": 24,
+                        "width": 24,
+                        "y": 16,
+                        "x": 0,
+                        "type": "log",
+                        "properties": {
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @request not like \"/oauth/token\"\n| sort @timestamp desc\n| limit 100\n| display @timestamp, @method, @request, @responsecode, @host, @tenant, @responsetime, @size, @agent, @xforwardedfor, @correlationid",
+                            "region": "${AWS::Region}",
+                            "stacked": false,
+                            "title": "Log group: /aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log",
+                            "view": "table"
+                        }
+                    }
+                ]
+            }

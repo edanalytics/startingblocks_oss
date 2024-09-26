@@ -1,0 +1,503 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  This template creates cloudfront for swagger and lambda to update Swagger UI.  
+Parameters:
+  EnvLabel:
+    Description: Provide a label for your environment to identify resources easier.
+    Type: String
+  DomainName:
+    Type: String
+    Description: Domain Name for the environment
+  S3SourceBucket:
+    Type: String
+    Description: This provides the name of the S3 bucket where the Lambda source code
+      resides.
+  HostedZoneId:
+    Description: A Route53 HostedZone is required. Select the zone for this environment.
+    Type: AWS::Route53::HostedZone::Id
+  SwaggerDefaultURL:
+    Description: URL for swagger json document that Swagger-UI will load by default
+    Type: String
+  CRHelperLambdaLayer:
+    Description: Reference to the Custom Resource Helper Lambda Layer
+    Type: String
+  Partner:
+    Type: String
+    Description: Select partner for which Starting Blocks environment will be deployed.
+    Default: 'ea'
+Resources:
+  S3SwaggerFEBucket:
+    Type: AWS::S3::Bucket
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub '${EnvLabel}-${Partner}-edfi-swagger-ui'
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: EnvLabel
+          Value: !Ref EnvLabel
+  S3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref S3SwaggerFEBucket
+      PolicyDocument:
+        Statement:
+          - Action:
+              - 's3:GetObject'
+            Effect: Allow
+            Resource: !Sub 'arn:aws:s3:::${S3SwaggerFEBucket}/*'
+            Principal:
+              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}'
+  CloudFrontOriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub '${EnvLabel}-edfi-swagger-ui-OAI'
+  East1CertRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: 'AllowActions'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - acm:ListCertificates
+                  - acm:DescribeCertificate
+                  - acm:RequestCertificate
+                  - acm:DeleteCertificate
+                  - route53:ListHostedZonesByName
+                  - route53:ChangeResourceRecordSets
+                Resource: '*'
+  East1CertFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Layers:
+        - !Ref 'CRHelperLambdaLayer'
+      Description: Creates and validates a certificate in us-east-1
+      FunctionName: !Sub '${EnvLabel}-swagger-east-1-cert'
+      Role: !GetAtt 'East1CertRole.Arn'
+      Runtime: python3.11
+      Timeout: 600
+      Code:
+        ZipFile: |
+          import boto3
+          import time
+          import signal
+          from botocore.config import Config
+          from crhelper import CfnResource
+
+          helper = CfnResource()
+          us_east_1 = Config(
+                  region_name = 'us-east-1'
+              )
+
+          def lambda_handler(event, context):
+              signal.alarm(int((context.get_remaining_time_in_millis() / 1000) - 1))
+              helper(event, context)
+
+          @helper.create
+          def create(event, _):
+              domain_name = event['ResourceProperties']['DomainName'].lower()
+              hosted_zone = event['ResourceProperties']['HostedZone']
+              cert_exists = check_for_cert(domain_name)
+
+              if cert_exists:
+                  helper.Data['Arn'] = cert_exists
+              else:
+                  certificate_arn = request_certificate(domain_name)
+                  validation_records = get_validation_records(certificate_arn)
+                  r53_response = route53(hosted_zone, 'UPSERT', validation_records)
+                  wait_for_validation(certificate_arn)
+                  helper.Data['Arn'] = certificate_arn
+
+          @helper.update
+          def no_op(_, __):
+              pass
+
+          @helper.delete
+          def delete(event, _):
+              domain_name = event['ResourceProperties']['DomainName'].lower()
+              hosted_zone = event['ResourceProperties']['HostedZone']
+              certificate_arn = check_for_cert(domain_name)
+              validation_records = get_validation_records(certificate_arn)
+              route53(hosted_zone, 'DELETE', validation_records)
+              delete_certificate(certificate_arn) 
+
+          def check_for_cert(domain_name):
+              client = boto3.client('acm', config=us_east_1)
+              paginator = client.get_paginator('list_certificates')
+              for page in paginator.paginate():
+                  for cert in page['CertificateSummaryList']:
+                      if cert['DomainName'] == domain_name:
+                          print(cert['CertificateArn'])
+                          return cert['CertificateArn']
+              print('Cert not found')
+              return False
+
+          def request_certificate(domain_name):
+              client = boto3.client('acm', config=us_east_1)
+              response = client.request_certificate(
+                  DomainName=domain_name,
+                  ValidationMethod='DNS',
+              )
+              print('certificate_arn: {}'.format(response['CertificateArn']))
+              return response['CertificateArn']
+
+          def delete_certificate(cert_arn):
+              client = boto3.client('acm', config=us_east_1)
+              response = client.delete_certificate(
+                  CertificateArn=cert_arn
+              )
+              print(response)
+
+          def get_validation_records(cert_arn):
+              client = boto3.client('acm', config=us_east_1)
+              validation_records=[]
+              while validation_records == []:
+                  time.sleep(3)
+                  response = client.describe_certificate(
+                      CertificateArn=cert_arn
+                  )
+                  for option in response['Certificate']['DomainValidationOptions']:
+                      if ('ResourceRecord' in option.keys() and
+                          option['ValidationMethod'] == 'DNS' and
+                          option['ResourceRecord'] not in validation_records):
+                              print(option['ResourceRecord'])
+                              validation_records.append(option['ResourceRecord'])
+              return validation_records
+
+          def route53(zone, action, records):
+              print(f'hosted_zone_id: {zone}')
+              print(f'action: {action}')
+              print(records)
+              client = boto3.client('route53', config=us_east_1)
+              for record in records:
+                  r53_response = client.change_resource_record_sets(
+                      HostedZoneId=zone,
+                      ChangeBatch={
+                          'Comment': 'ACM Validation',
+                          'Changes': [
+                              {
+                                  'Action': action,
+                                  'ResourceRecordSet': {
+                                      'Name': record['Name'], # Name from ACM
+                                      'Type': record['Type'],
+                                      'TTL': 300,
+                                      'ResourceRecords': [
+                                          {
+                                              'Value': record['Value'] # Value from ACM
+                                          }
+                                      ]
+                                  }
+                              }
+                          ]
+                      }
+                  )
+              print(r53_response)
+              return r53_response
+
+          def wait_for_validation(cert_arn):
+              client = boto3.client('acm', config=us_east_1)
+              certificateStatus = 'PENDING_VALIDATION'
+              while certificateStatus == 'PENDING_VALIDATION':
+                  time.sleep(10)
+                  statusResponse = client.describe_certificate(
+                      CertificateArn=cert_arn
+                  )
+                  certificateStatus = statusResponse['Certificate']['Status']
+                  print('Certificate status: ' + certificateStatus)  
+
+  East1CertFunctionVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'East1CertFunction'
+  East1Cert:
+    Type: Custom::East1Cert
+    DependsOn: East1CertFunctionVersion
+    Properties:
+      ServiceToken: !GetAtt 'East1CertFunction.Arn'
+      DomainName: !Sub 'swagger-ui.${DomainName}'
+      HostedZone: !Ref 'HostedZoneId'
+      Wildcard: FALSE
+
+  SwaggerLambdaRole:
+      Type: AWS::IAM::Role
+      Properties:
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        Path: /
+
+  CloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig: 
+        DefaultRootObject: index.html
+        Aliases:
+            - !Sub 'swagger-ui.${DomainName}'
+        Comment: !Sub '${EnvLabel} Swagger UI'
+        CustomErrorResponses:
+          - ErrorCode: 400
+            ErrorCachingMinTTL: 10
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+          - ErrorCode: 403
+            ErrorCachingMinTTL: 10
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+          - ErrorCode: 404
+            ErrorCachingMinTTL: 10
+            ResponseCode: 200
+            ResponsePagePath: '/index.html'
+          - !Ref 'AWS::NoValue'
+        DefaultCacheBehavior: 
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          Compress: true
+          SmoothStreaming: false
+          TargetOriginId: !Ref S3SwaggerFEBucket
+          ViewerProtocolPolicy: redirect-to-https
+          ResponseHeadersPolicyId: eaab4381-ed33-4a86-88ca-d9558dc6cd63
+        Enabled: true
+        HttpVersion: http2
+        IPV6Enabled: true
+        Origins:
+          - ConnectionAttempts: 3
+            ConnectionTimeout: 10
+            DomainName: !GetAtt S3SwaggerFEBucket.RegionalDomainName
+            Id: !Ref S3SwaggerFEBucket
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}'
+        PriceClass: PriceClass_100
+        ViewerCertificate: 
+          AcmCertificateArn: !GetAtt 'East1Cert.Arn'
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+      Tags: 
+        - Key: EnvLabel
+          Value: !Ref EnvLabel
+
+  CloudFrontRoute53record:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt 'CloudFront.DomainName'
+        HostedZoneId: 'Z2FDTNDATAQYW2'
+      Name: !Sub 'swagger-ui.${DomainName}'
+      HostedZoneId: !Ref HostedZoneId
+      Type: A
+
+  SwaggerLambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub '${EnvLabel}-edfi-swagger-lambda-${AWS::Region}-policy'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - ec2:DescribeSubnets
+              - ec2:DescribeAvailabilityZones
+            Resource:
+              - '*'
+          - Effect: Allow
+            Action:
+              - cloudfront:CreateInvalidation
+            Resource: 
+              - !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFront}' 
+          - Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:DeleteObjectVersion
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketVersions
+              - s3:PutObject
+            Resource: 
+              - !Sub 'arn:aws:s3:::${S3SwaggerFEBucket}'
+              - !Sub 'arn:aws:s3:::${S3SwaggerFEBucket}/*'
+      Roles:
+        - !Ref 'SwaggerLambdaRole'
+  SwaggerLambdaAWSCLILayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.11
+      Content:
+        S3Bucket: 
+          !Sub '${S3SourceBucket}'
+        S3Key: 'lambdas/awscli-py311.zip'
+      Description: AWSCLI for Python 3.11
+      LayerName: !Sub '${EnvLabel}-awscli-py311'
+  SwaggerCustomResource:
+    Type: Custom::SwaggerCustomResource
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Delete
+    Properties:
+      ServiceToken: !GetAtt SwaggerUpdateLambda.Arn
+  SwaggerUpdateLambda:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Layers:
+        - !Ref SwaggerLambdaAWSCLILayer
+        - !Ref 'CRHelperLambdaLayer'
+      Description: Creates lambda to update Swagger UI
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          S3_BUCKET: !Ref S3SwaggerFEBucket
+          CF_DISTRIBUTION: !Ref CloudFront 
+          DEFAULT_URL: !Ref SwaggerDefaultURL
+      Runtime: python3.11
+      MemorySize: 128
+      Role: !GetAtt 'SwaggerLambdaRole.Arn'
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import urllib3
+          import shutil
+          import subprocess
+          import os
+          import boto3
+          from zipfile import ZipFile
+          from crhelper import CfnResource
+          
+          helper = CfnResource()
+
+          def lambda_handler(event, context):
+              helper(event, context)
+
+          @helper.create
+          @helper.update
+          def create(event, context):
+              # Retrieve parameters
+              the_bucket = os.environ['S3_BUCKET']
+              cf_dist = os.environ['CF_DISTRIBUTION']
+              swagger_url = os.environ['DEFAULT_URL']
+              http = urllib3.PoolManager()
+              print(swagger_url)
+              
+              url = 'https://github.com/swagger-api/swagger-ui/releases/latest'
+              r = http.request('GET', url, redirect=False)
+              print(r.headers['Location'])
+
+              v = r.headers['Location'].split('/')[-1]
+              print(v)
+
+              zip_url = f'https://github.com/swagger-api/swagger-ui/archive/refs/tags/{v}.zip'
+              print(zip_url)
+
+              path = '/tmp/archive.zip'
+              with http.request('GET', zip_url, preload_content=False) as r, open(path, 'wb') as out_file:
+                  shutil.copyfileobj(r, out_file)
+
+              with ZipFile('/tmp/archive.zip', 'r') as zipObj:
+                zipObj.extractall('/tmp')
+                
+              os.remove('/tmp/archive.zip')
+              src_dir = os.listdir('/tmp')[0]
+
+              with open(f'/tmp/{src_dir}/dist/swagger-initializer.js', 'r') as f:
+                  content = f.read()
+
+              content = content.replace(
+                  'https://petstore.swagger.io/v2/swagger.json',
+                  swagger_url
+              )
+              content = content.replace(
+                'deepLinking: true,',
+                'deepLinking: true, showExtensions: true,'
+              )
+              print(content)
+
+              with open(f'/tmp/{src_dir}/dist/swagger-initializer.js', 'w') as f:
+                  f.write(content)
+
+              s3_uri = 's3://{0}/'.format(the_bucket)
+              sync = subprocess.run(
+                  ["/opt/awscli/aws", "s3", "sync", ".", s3_uri, "--delete"],
+                  cwd=f"/tmp/{src_dir}/dist/"
+              )
+              print(sync.stdout)
+
+              client = boto3.client('cloudfront')
+              response = client.create_invalidation(
+                  DistributionId=cf_dist,
+                  InvalidationBatch={
+                      'Paths': {
+                          'Quantity': 1,
+                          'Items': [
+                              '/*',
+                          ]
+                      },
+                      'CallerReference': v
+                  }
+              )
+
+          @helper.delete
+          def empty_versioned_bucket(event,context):
+              the_bucket = os.environ['S3_BUCKET']
+              all_versions = []
+              s3 = boto3.resource('s3')
+              bucket = s3.Bucket(the_bucket)
+              for i in bucket.object_versions.all():
+                  all_versions.append({
+                      'Key': i.object_key,
+                      'VersionId': i.id
+                  })
+
+              for group in chunker(all_versions, 1000):
+                  response = bucket.delete_objects(
+                      Delete = {
+                          'Objects': group,
+                          'Quiet': True
+                      }
+                  )
+
+          def chunker(seq, size):
+              return (seq[pos:pos + size] for pos in range(0, len(seq), size))
+Outputs:
+  DistributionId:
+    Description: Cloudfront Distribution ID
+    Value: !Ref CloudFront
+  SwaggerURL:
+    Description: The URL for swagger
+    Value: !Join ['', ['swagger-ui.', !Ref DomainName]]
