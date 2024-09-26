@@ -37,6 +37,7 @@ Each database artifact in the `database` folder is prefixed with which database 
 -   <b>SSLPolicy - </b> Policy to determine which ssl/tls ciphers are accepted.
 -   <b>SNSTopicArn - </b> Optionally add ARN of SNS topic to publish Route53 HealthCheck Alarms. SNS topic is deployed separately.
 -   <b>DeploySwagger - </b> Optionally will deploy a swagger site for the StartingBlocks environment.
+-   <b>SlackWebhookUrl - </b> Optionally add a slack webhook URL to surface alerts from beanstalk and rds environments.
 -   <b>SSHServerParentStack - </b> Optionally associate SSH server to StartingBlocks resources. SSH server is deployed separately.
 -   <b>VpcId - </b> The VPC ID for where to deploy StartingBlocks resources. Must be deployed before StartingBlocks.
 -   <b>PublicSubnet1Id - </b> The Subnet ID of a Public Subnet in one of the Availability Zones. Must be configured before StartingBlocks deployment.
