@@ -10,14 +10,10 @@ Any feature requests or questions should be raised using [GitHub Issues on the O
 5. Community Feature Addition Pull Requests
 6. StartingBlocks Product Team Feature Addition Pull Requests
 
----
+>[!NOTE]
+>Security releases, documentation updates, and updates to the Ed-Fi application bundles will be released in special priority as deemed appropriate.
 
-**NOTE:**
-Security releases, documentation updates, and updates to the Ed-Fi application bundles will be released in special priority as deemed appropriate.
-
----
-
-If you'd like to recieve up to date notifications for updates you can change your `watch` settings on the repository.
+If you'd like to receive up to date notifications for updates you can change your `watch` settings on the repository.
 ![](./imgs/watch_screenshot.png).
 
-For most recent release please [visit the release page.](https://github.com/edanalytics/startingblocks_oss/releases/)
+For the most recent release please [visit the release page.](https://github.com/edanalytics/startingblocks_oss/releases/)

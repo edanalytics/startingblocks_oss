@@ -1,0 +1,105 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Deploys a State Machine to run queries in multiple databases.
+Parameters:
+  EnvLabel:
+    Description: Provide a label for your environment to identify resources easier.
+    Type: String
+  QueryRunnerLambdaArn:
+    Type: String
+    Description: ARN of the Query Runner Lambda Function
+
+Resources:
+  QueryRunnerStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: AccessPolicy
+          PolicyDocument: 
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Ref 'QueryRunnerLambdaArn'
+  QueryRunnerStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties: 
+      DefinitionString: |-
+        {
+          "Comment": "Executes a query for a list of databases",
+          "StartAt": "Iterate through ODSs",
+          "States": {
+            "Iterate through ODSs": {
+              "Type": "Map",
+              "ItemProcessor": {
+                "ProcessorConfig": {
+                  "Mode": "INLINE"
+                },
+                "StartAt": "Execute query",
+                "States": {
+                  "Execute query": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "OutputPath": "$.Payload",
+                    "Parameters": {
+                      "Payload.$": "$",
+                      "FunctionName": "${LambdaArn}"
+                    },
+                    "Retry": [
+                      {
+                        "ErrorEquals": [
+                          "Lambda.ServiceException",
+                          "Lambda.AWSLambdaException",
+                          "Lambda.SdkClientException",
+                          "Lambda.TooManyRequestsException"
+                        ],
+                        "IntervalSeconds": 1,
+                        "MaxAttempts": 3,
+                        "BackoffRate": 2
+                      }
+                    ],
+                    "End": true
+                  }
+                }
+              },
+              "ItemsPath": "$.DatabaseList",
+              "ItemSelector": {
+                "LambdaArn": "${LambdaArn}",
+                "QueryS3Bucket.$": "$.QueryS3Bucket",
+                "QueryS3Key.$": "$.QueryS3Key",
+                "DatabaseName.$": "$$.Map.Item.Value"
+              },
+              "MaxConcurrency": 10,
+              "Next": "Filter results"
+            },
+            "Filter results": {
+              "Type": "Pass",
+              "End": true,
+              "InputPath": "$[?(@.status != Success)]",
+              "Parameters": {
+                "failures.$": "States.Array($[*].body)"
+              }
+            }
+          }
+        }
+      DefinitionSubstitutions: 
+        LambdaArn: !Ref 'QueryRunnerLambdaArn'
+      RoleArn:  !GetAtt 'QueryRunnerStateMachineRole.Arn'
+      StateMachineName: !Sub 'QueryRunner-${EnvLabel}'
+      Tags: 
+        - Key: Environment
+          Value: !Ref 'EnvLabel'

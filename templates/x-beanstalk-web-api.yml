@@ -81,6 +81,9 @@ Parameters:
       - 'RollingWithAdditionalBatch'
       - 'AllAtOnce'
     Default: 'RollingWithAdditionalBatch'
+  BeanstalkPlatformUpdateTime:
+    Description: Preferred time for Elastic Beanstalk automatic platform updates. 
+    Type: String
   WebAPIMaxPoolSize:
     Type: Number
     Description: Maximun Pool Size per Application Server
@@ -106,6 +109,9 @@ Parameters:
     Type: String
     Description: Select partner for which Starting Blocks environment will be deployed.
     Default: 'ea'
+  BearerTokenPerClientLimit:
+    Type: Number
+    Description: The maximum number of bearer tokens per client.
 
 Conditions:
   UseWildcardSubdomains: !Equals
@@ -124,6 +130,7 @@ Conditions:
     - MultiTenant
   EnableHealthCheck:
     !Not [!Equals [!Ref SNSTopicArn, '']]
+  EnableBeanstalkPlatformUpdate: !Not [!Equals [!Ref BeanstalkPlatformUpdateTime, '']]
 Resources:
     SharedAlbHTTPSRule:
       DependsOn:
@@ -186,7 +193,6 @@ Resources:
                 - SNS:Subscribe
                 - SNS:ListSubscriptionsByTopic
                 - SNS:Publish
-                - SNS:Receive
               Resource: !Ref 'BeanstalkWebApiSNSTopic'
               Condition:
                 StringEquals:
@@ -198,12 +204,12 @@ Resources:
           Description: 'Beanstalk environment for the EdFi Web API'
           EnvironmentName: !Sub '${EnvLabel}-WebApi-Prod'
           OptionSettings:
-            - !If
-              - EnableHealthNotifications
-              - Namespace: aws:elasticbeanstalk:sns:topics
-                OptionName: Notification Topic ARN
-                Value: !Ref 'BeanstalkWebApiSNSTopic'
-              - !Ref 'AWS::NoValue'
+            - Namespace: aws:elasticbeanstalk:sns:topics
+              OptionName: Notification Topic ARN
+              Value: !If
+                - EnableHealthNotifications
+                - !Ref 'BeanstalkWebApiSNSTopic'
+                - !Ref 'AWS::NoValue'
             - Namespace: aws:elasticbeanstalk:healthreporting:system
               OptionName: ConfigDocument
               Value: | 
@@ -342,6 +348,32 @@ Resources:
                 - ','
                 - - !Ref PrivateSubnet1Id
                   - !Ref PrivateSubnet2Id
+            - !If 
+              - EnableBeanstalkPlatformUpdate
+              - Namespace: aws:elasticbeanstalk:managedactions
+                OptionName: ManagedActionsEnabled
+                Value: 'true'
+              - Namespace: aws:elasticbeanstalk:managedactions
+                OptionName: ManagedActionsEnabled
+                Value: 'false'
+            - !If 
+              - EnableBeanstalkPlatformUpdate
+              - Namespace: aws:elasticbeanstalk:managedactions:platformupdate
+                OptionName: UpdateLevel
+                Value: 'minor'
+              - !Ref 'AWS::NoValue'
+            - !If 
+              - EnableBeanstalkPlatformUpdate
+              - Namespace: aws:elasticbeanstalk:managedactions:platformupdate
+                OptionName: InstanceRefreshEnabled
+                Value: 'false'
+              - !Ref 'AWS::NoValue'
+            - !If 
+              - EnableBeanstalkPlatformUpdate
+              - Namespace: aws:elasticbeanstalk:managedactions
+                OptionName: PreferredStartTime
+                Value: !Ref BeanstalkPlatformUpdateTime
+              - !Ref 'AWS::NoValue'
             - Namespace: aws:elasticbeanstalk:application:environment
               OptionName: AURORA_MASTER_SECRET
               Value: !Ref RDSSecret
@@ -357,6 +389,9 @@ Resources:
             - Namespace: aws:elasticbeanstalk:application:environment
               OptionName: ApiSettings__DefaultPageSizeLimit
               Value: 5000
+            - Namespace: aws:elasticbeanstalk:application:environment
+              OptionName: ApiSettings__BearerTokenPerClientLimit
+              Value: !Ref BearerTokenPerClientLimit
             - Namespace: aws:elasticbeanstalk:application:environment
               OptionName: Logging__LogLevel__Default
               Value: Warning
@@ -381,7 +416,7 @@ Resources:
             - Namespace: aws:elasticbeanstalk:cloudwatch:logs
               OptionName: RetentionInDays
               Value: 365
-          SolutionStackName: !Sub 'arn:aws:elasticbeanstalk:${AWS::Region}::platform/Docker running on 64bit Amazon Linux 2023'
+          SolutionStackName: !Sub 'arn:${AWS::Partition}:elasticbeanstalk:${AWS::Region}::platform/Docker running on 64bit Amazon Linux 2023'
           Tier: 
             Name: 'WebServer'
             Type: 'Standard'

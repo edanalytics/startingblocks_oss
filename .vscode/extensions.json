@@ -1,0 +1,6 @@
+{
+    "recommendations": [
+      "kddejong.vscode-cfn-lint",
+      "xargsuk.checkov-prismaless"
+    ]
+}

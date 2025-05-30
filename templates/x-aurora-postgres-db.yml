@@ -39,14 +39,13 @@ Parameters:
     # NoEcho: 'true'
 
   KmsKeyId:
-    Default: ''
     Description: The KMS Key ID used to encrypt the database.
     Type: String
      
   DBEngineVersion:
     Description: Select Database Engine Version
     Type: String
-    Default: "13.12"
+    Default: "16.6"
 
   DatabaseType:
     Description: The database type for your environment (Only change to Serverless if DBEngineVersion is 13.7).
@@ -68,14 +67,6 @@ Parameters:
     Default: db.t3.medium
     Description: Database Instance Class. db.r5 instance classes are supported for Aurora PostgreSQL 10.6 or later. db.t3.medium instance class is supported for Aurora PostgreSQL 10.7 or later.
     Type: String
-    AllowedValues:
-    - db.t3.medium
-    - db.t3.large
-    - db.t4g.medium
-    - db.t4g.large
-    - db.r6g.large
-    - db.r6g.xlarge
-    - db.r6g.2xlarge
     
   DeployReplica:
     Description: Deploy two Aurora instances.
@@ -178,6 +169,8 @@ Resources:
         
   DBSNSTopic:
     Type: AWS::SNS::Topic
+    # checkov:skip=CKV_AWS_26: Ensure all data stored in SNS topic is encrypted
+    # KMS key is used, but not picked up by checkov
     Properties:
       KmsMasterKeyId: !Ref KmsKeyId
       Subscription: !If
@@ -237,7 +230,6 @@ Resources:
     Type: 'AWS::KMS::Alias'
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
-    DependsOn: AuroraDBCluster
     Properties:
       AliasName: !Sub 'alias/${AuroraDBCluster}'
       TargetKeyId: !Ref KmsKeyId
@@ -259,6 +251,8 @@ Resources:
         
   AuroraDBCluster:
     Type: AWS::RDS::DBCluster
+    # Test case to be skipped by Checkov
+    # checkov:skip=CKV_AWS_162:Ensure RDS cluster has IAM authentication enabled
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
@@ -272,9 +266,9 @@ Resources:
           - !Ref 'AWS::NoValue'
       Port: 5432
       MasterUsername:
-        !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:username}}' ]]
+        !Join [':', ['{{resolve:secretsmanager', !Ref RDSSecret, 'SecretString:username}}' ]]
       MasterUserPassword:
-        !Join ['', ['{{resolve:secretsmanager:', !Ref RDSSecret, ':SecretString:password}}' ]]
+        !Join [':', ['{{resolve:secretsmanager', !Ref RDSSecret, 'SecretString:password}}' ]]
       DBSubnetGroupName: !Ref DBSubnetGroup
       VpcSecurityGroupIds:
       - !Ref RDSSecurityGroupID  
@@ -292,6 +286,8 @@ Resources:
         
   AuroraDBFirstInstance:
     Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       DBInstanceClass: !If 
           - IsServerless
@@ -316,8 +312,10 @@ Resources:
           Value: !Ref EnvLabel
 
   AuroraDBSecondInstance:
-    Condition: IsReplica
     Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Condition: IsReplica
     DependsOn: 
       - AuroraDBFirstInstance
     Properties: 

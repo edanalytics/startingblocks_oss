@@ -25,6 +25,9 @@ Parameters:
     Type: String
     Description: Size of the EC2 machines to host the Docker containers
     Default: t3a.small,t3.small
+  BeanstalkServiceRole:
+    Type: String
+    Description: ARN of the service Role for Elastic Beanstalk
   VpcId: 
     Type: AWS::EC2::VPC::Id
     Description: This provides the VPC to deploy resources in.
@@ -57,6 +60,9 @@ Parameters:
       - 'RollingWithAdditionalBatch'
       - 'AllAtOnce'
     Default: 'RollingWithAdditionalBatch'
+  BeanstalkPlatformUpdateTime: 
+    Description: Preferred time for Elastic Beanstalk automatic platform updates.  
+    Type: String
   UploadAndDeployArn:
     Type: String
     Description: ARN of the Upload and Deploy Function
@@ -68,6 +74,7 @@ Conditions:
   UseRollingUpdates: !Equals
     - !Ref 'DeploymentStrategy'
     - 'RollingWithAdditionalBatch'
+  EnableBeanstalkPlatformUpdate: !Not [!Equals [!Ref BeanstalkPlatformUpdateTime, '']]
 
 Resources:
     SharedAlbAdminApiRuleCustom:
@@ -198,6 +205,9 @@ Resources:
             - Namespace: aws:ec2:instances
               OptionName: SpotFleetOnDemandBase
               Value:  1
+            - Namespace: aws:elasticbeanstalk:environment
+              OptionName: ServiceRole
+              Value: !Ref BeanstalkServiceRole
             - Namespace: aws:autoscaling:asg
               OptionName: EnableCapacityRebalancing
               Value: true  
@@ -210,6 +220,32 @@ Resources:
                 - ','
                 - - !Ref PrivateSubnet1Id
                   - !Ref PrivateSubnet2Id
+            - !If 
+              - EnableBeanstalkPlatformUpdate
+              - Namespace: aws:elasticbeanstalk:managedactions
+                OptionName: ManagedActionsEnabled
+                Value: 'true'
+              - Namespace: aws:elasticbeanstalk:managedactions
+                OptionName: ManagedActionsEnabled
+                Value: 'false'
+            - !If 
+              - EnableBeanstalkPlatformUpdate
+              - Namespace: aws:elasticbeanstalk:managedactions:platformupdate
+                OptionName: UpdateLevel
+                Value: 'minor'
+              - !Ref 'AWS::NoValue'
+            - !If 
+              - EnableBeanstalkPlatformUpdate
+              - Namespace: aws:elasticbeanstalk:managedactions:platformupdate
+                OptionName: InstanceRefreshEnabled
+                Value: 'false'
+              - !Ref 'AWS::NoValue'
+            - !If 
+              - EnableBeanstalkPlatformUpdate
+              - Namespace: aws:elasticbeanstalk:managedactions
+                OptionName: PreferredStartTime
+                Value: !Ref BeanstalkPlatformUpdateTime
+              - !Ref 'AWS::NoValue'
             - Namespace: aws:elasticbeanstalk:application:environment
               OptionName: AURORA_MASTER_SECRET
               Value: !Ref RDSSecret
@@ -249,7 +285,7 @@ Resources:
             - Namespace: aws:elasticbeanstalk:cloudwatch:logs
               OptionName: RetentionInDays
               Value: 365
-          SolutionStackName: !Sub 'arn:aws:elasticbeanstalk:${AWS::Region}::platform/Docker running on 64bit Amazon Linux 2023'
+          SolutionStackName: !Sub 'arn:${AWS::Partition}:elasticbeanstalk:${AWS::Region}::platform/Docker running on 64bit Amazon Linux 2023'
           Tier: 
             Name: 'WebServer'
             Type: 'Standard'
