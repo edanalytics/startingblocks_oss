@@ -86,7 +86,7 @@ Resources:
     DeletionPolicy: Retain
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${AdminDbS3Name}.sql'
       Database: admin_default
@@ -100,7 +100,7 @@ Resources:
     DependsOn: PostgresDBRestoreAdminDefault
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${AdminApiDbS3Name}.sql'
       Database: admin_default
@@ -112,7 +112,7 @@ Resources:
     DeletionPolicy: Retain
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${AdminDbS3Name}.sql'
       Database: admin_template
@@ -125,7 +125,7 @@ Resources:
     DependsOn: PostgresDBRestoreAdminTemplate
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${AdminApiDbS3Name}.sql'
       Database: admin_template
@@ -139,7 +139,7 @@ Resources:
     DeletionPolicy: Retain
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${MinimalDbS3Name}.sql'
       Database: ods_default_default
@@ -151,7 +151,7 @@ Resources:
     DeletionPolicy: Retain
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${MinimalDbS3Name}.sql'
       Database: odst_default_minimal
@@ -165,7 +165,7 @@ Resources:
     DeletionPolicy: Retain
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${PopulatedDbS3Name}.sql'
       Database: ods_default_default
@@ -177,7 +177,7 @@ Resources:
     DeletionPolicy: Retain
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${PopulatedDbS3Name}.sql'
       Database: odst_default_populated
@@ -191,7 +191,7 @@ Resources:
     DeletionPolicy: Retain
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${SecurityDbS3Name}.sql'
       Database: security_default
@@ -203,7 +203,7 @@ Resources:
     DeletionPolicy: Retain
     Type: Custom::PostgresDBRestore
     Properties:
-      ServiceToken: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
+      ServiceToken: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${LambdaFunctionName}'
       Bucket: !Ref 'S3SourceBucket'
       BucketKey: !Sub '${S3SourceKeyName}/${SecurityDbS3Name}.sql'
       Database: security_template

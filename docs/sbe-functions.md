@@ -64,7 +64,7 @@ Example output:
 
 ### Remove
 
-This action will remove entry tied to the given Tenant from the DynamoDB tables and then delete the Admin and Security databases.
+This action will remove the entry tied to the given Tenant from the DynamoDB tables and then delete the Admin and Security databases.
 
 Example input:
 
@@ -153,9 +153,15 @@ Example input:
 
 Example output:
 
+    {
+
+        "statusCode": 200,
+        "body": "Command Pending"
+
+    }
 ### Keygen
 
-This action generates the keys for use with the AdminAPI.  The generated keys have been loaded into the AdminAPI database are ready to use.
+This action generates the keys for use with the AdminAPI.  The generated keys have been loaded into the AdminAPI database and are ready to use.
 
 ---
 
@@ -199,7 +205,7 @@ Example output:
 <details>
     <summary><b>ODSManagement</b></summary>
 
-`ODSManagement` is a lambda function that is deployed via CloudFormation within a Startingblocks v7+ environment. It takes input in the form of JSON with expected elements and will output both print statements and return of JSON with a status code.
+`ODSManagement` is a lambda function that is deployed via CloudFormation within a StartingBlocks v7.x environment. It takes input in the form of JSON with expected elements and will output both print statements and return of JSON with a status code.
 
 This function allows admins of the environment a way to add and remove ODSs from specific tenants within the environment. This function interacts directly with the DB instance.
 
@@ -245,7 +251,7 @@ This is an optional list of edorgs that limit which edorgs are picked up by the 
 
 ### Add
 
-This action first checks for an existing ODS by the given information concatenated into the correct naming scheme. [Example below: ods_examplename_prod] Assuming one does not exist it will clone a given template into a new ODS and name the resulting ODS with the correct naming scheme within a Startingblocks 7.0+ environment. A connection string will be generated and encrypted and the linking information will be added to the odsinstances table inside the Admin database of the parent tenant.
+This action first checks for an existing ODS by the given information concatenated into the correct naming scheme. [Example below: ods_examplename_prod] Assuming one does not exist it will clone a given template into a new ODS and name the resulting ODS with the correct naming scheme within a StartingBlocks v7.x environment. A connection string will be generated and encrypted and the linking information will be added to the odsinstances table inside the Admin database of the parent tenant.
 
 Example input:
 
@@ -345,7 +351,7 @@ Example output:
 <details>
     <summary><b>EdOrgManagement</b></summary>
 
-Ed Org Management is a lambda function that is deployed via Cloud Formation within a StartingBlocks v7+ environment. It takes input in the form of JSON with expected elements and will output both print statements and return of JSON with a status code.
+Ed Org Management is a lambda function that is deployed via Cloud Formation within a StartingBlocks v7.x environment. It takes input in the form of JSON with expected elements and will output both print statements and return of JSON with a status code.
 
 This function allows admins to add and remove edorg records for environments that require some pre-seeding of edorgs in order to generate application credentials. The function interacts directly with the DB instance.
 

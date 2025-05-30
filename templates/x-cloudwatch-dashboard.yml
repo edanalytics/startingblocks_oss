@@ -53,7 +53,7 @@ Resources:
                         "x": 6,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @responsecode not like /2\\d\\d/\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| fields replace(match, \"/data/v3/ed-fi/\", \"\") as resource\n| stats count(*) as total by concat(@method, \" \", resource, \" \", @responsecode)\n| sort total desc",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| filter @responsecode not like /2\\d\\d/\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| fields replace(match, \"/data/v3/ed-fi/\", \"\") as resource\n| stats count(*) as total by concat(@method, \" \", resource, \" \", @responsecode)\n| sort total desc",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Method/Resource/Response Distribution (Errors Only)",
@@ -89,7 +89,7 @@ Resources:
                         "x": 0,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n#| filter @agent not like \"ELB-HealthChecker\"\n| filter @responsecode not like /2\\d\\d/\n| filter @host like /${DomainName}/\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<longresource>^(\\/[^\\/]+){1,4})/\n| fields replace(longresource, \"/data/v3/ed-fi/\", \"\") as resource\n| fields replace(@host, \".${DomainName}\", \"\") as application\n| stats count(*) as count by application, @tenant, @method, resource, @responsecode\n#| limit 20\n| sort by application asc, count desc",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n#| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| filter @responsecode not like /2\\d\\d/\n| filter @host like /${DomainName}/\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<longresource>^(\\/[^\\/]+){1,4})/\n| fields replace(longresource, \"/data/v3/ed-fi/\", \"\") as resource\n| fields replace(@host, \".${DomainName}\", \"\") as application\n| stats count(*) as count by application, @tenant, @method, resource, @responsecode\n#| limit 20\n| sort by application asc, count desc",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Errors Dashboard",
@@ -103,7 +103,7 @@ Resources:
                         "x": 16,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @responsecode not like /2\\d\\d/\n| fields replace(@host, \".${DomainName}\", \"\") as application\n| stats count(*) as total by application, @tenant\n| sort total desc\n#| limit 10",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| filter @responsecode not like /2\\d\\d/\n| fields replace(@host, \".${DomainName}\", \"\") as application\n| stats count(*) as total by application, @tenant\n| sort total desc\n#| limit 10",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Total errors by application and tenant",
@@ -117,7 +117,7 @@ Resources:
                         "width": 24,
                         "height": 6,
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message, @logStream, @log\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| sort @responsetime desc\n| display @datetime, @host, @tenant, @method, @request, @responsecode, @responsetime, @correlationid\n| limit 10",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message, @logStream, @log\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| sort @responsetime desc\n| display @datetime, @host, @tenant, @method, @request, @responsecode, @responsetime, @correlationid\n| limit 10",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "view": "table",
@@ -384,7 +384,7 @@ Resources:
                         "x": 0,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/eb-docker/containers/eb-current-app/stdouterr.log' | fields @timestamp, @message | sort @timestamp desc | limit 100",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/eb-docker/containers/eb-current-app/stdouterr.log' | fields @timestamp, @message \n| sort @timestamp desc \n| limit 100",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "view": "table"
@@ -435,7 +435,7 @@ Resources:
                         "x": 0,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @request, @protocol, @responsecode, @size, @agent\n| filter @agent not like \"ELB-HealthChecker\"\n| parse @method \"GE*\" as MGET\n| parse @method \"POS*\" as MPOST\n| parse @method \"PU*\" as MPUT\n| parse @method \"DELET*\" as MDELETE\n| stats count(MGET) as GET, count(MPOST) as POST, count(MPUT) as PUT, count(MDELETE) as DELETE by bin(1m)",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @request, @protocol, @responsecode, @size, @agent\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| parse @method \"GE*\" as MGET\n| parse @method \"POS*\" as MPOST\n| parse @method \"PU*\" as MPUT\n| parse @method \"DELET*\" as MDELETE\n| stats count(MGET) as GET, count(MPOST) as POST, count(MPUT) as PUT, count(MDELETE) as DELETE by bin(1m)",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "HTTP Methods",
@@ -449,7 +449,7 @@ Resources:
                         "x": 8,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| stats count(*) as total by concat(@method, \" \", match, \" \", @responsecode)\n| sort total desc",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| stats count(*) as total by concat(@method, \" \", match, \" \", @responsecode)\n| sort total desc",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Method/Resource/Response Distribution",
@@ -463,7 +463,7 @@ Resources:
                         "x": 0,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| stats count(*) as total by @host, @tenant\n| sort total desc\n| limit 10",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| stats count(*) as total by @host, @tenant\n| sort total desc\n| limit 10",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Requests by host and tenant",
@@ -477,7 +477,7 @@ Resources:
                         "x": 7,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @request not like \"/oauth/token\"\n| sort @timestamp desc\n| limit 10\n| display @timestamp, @method, @request, @responsecode, @host, @tenant, @responsetime, @size, @agent, @xforwardedfor, @correlationid",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| sort @timestamp desc\n| limit 10\n| display @timestamp, @method, @request, @responsecode, @host, @tenant, @responsetime, @size, @agent, @xforwardedfor, @correlationid",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Log group: /aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log",
@@ -549,7 +549,7 @@ Resources:
                         "x": 0,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| stats count(*) as total by concat(@method, \" \", match, \" \", @responsecode)\n| sort total desc",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @agent\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| filter @request not like \"/oauth/token\"\n| parse @request /(?<base>^[^?]+)/\n| parse base /(?<match>^(\\/[^\\/]+){1,4})/\n| stats count(*) as total by concat(@method, \" \", match, \" \", @responsecode)\n| sort total desc",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Method/Resource/Response Distribution",
@@ -563,7 +563,7 @@ Resources:
                         "x": 12,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @request, @protocol, @responsecode, @size, @agent\n| filter @agent not like \"ELB-HealthChecker\"\n| parse @method \"GE*\" as MGET\n| parse @method \"POS*\" as MPOST\n| parse @method \"PU*\" as MPUT\n| parse @method \"DELET*\" as MDELETE\n| stats count(MGET) as GET, count(MPOST) as POST, count(MPUT) as PUT, count(MDELETE) as DELETE by bin(1m)",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"-\" \"*\"'  as @datetime, @method, @request, @protocol, @responsecode, @size, @agent\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| filter @request not like \"/oauth/token\"\n| parse @method \"GE*\" as MGET\n| parse @method \"POS*\" as MPOST\n| parse @method \"PU*\" as MPUT\n| parse @method \"DELET*\" as MDELETE\n| stats count(MGET) as GET, count(MPOST) as POST, count(MPUT) as PUT, count(MDELETE) as DELETE by bin(1m)",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "HTTP Methods",
@@ -577,7 +577,7 @@ Resources:
                         "x": 0,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| stats count(*) as total by @host, @tenant\n| sort total desc\n| limit 10",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*]'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime\n| parse @longrequest '/*/*' as @tenant, @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| filter @request not like \"/oauth/token\"\n| stats count(*) as total by @host, @tenant\n| sort total desc\n| limit 10",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Requests by host and tenant",
@@ -591,7 +591,7 @@ Resources:
                         "x": 12,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message \n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime \n| parse @longrequest '/*/*/*/*/*' as @tenant, @data, @version, @namespace, @longresource \n| filter @agent not like \"ELB-HealthChecker\" \n| filter @longrequest not like \"/oauth/token\" \n| filter @longrequest not like \"swagger.json\" \n| filter @longresource like \"\" and @tenant like \"\" \n| parse @longresource /(?<@resource>^[^?]+)/ \n| stats count(*) as total by @tenant, @method, @resource \n| sort total desc \n| limit 100",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message \n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime \n| parse @longrequest '/*/*/*/*/*' as @tenant, @data, @version, @namespace, @longresource \n| filter @agent not like \"ELB-HealthChecker\" \n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| filter @longrequest not like \"/oauth/token\" \n| filter @longrequest not like \"swagger.json\" \n| filter @longresource like \"\" and @tenant like \"\" \n| parse @longresource /(?<@resource>^[^?]+)/ \n| stats count(*) as total by @tenant, @method, @resource \n| sort total desc \n| limit 100",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Requests by tenant, method & resource",
@@ -605,7 +605,7 @@ Resources:
                         "x": 0,
                         "type": "log",
                         "properties": {
-                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @request not like \"/oauth/token\"\n| sort @timestamp desc\n| limit 100\n| display @timestamp, @method, @request, @responsecode, @host, @tenant, @responsetime, @size, @agent, @xforwardedfor, @correlationid",
+                            "query": "SOURCE '/aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log' | fields @timestamp, @message\n| parse @message '[*] \"* * *\" * * \"*\" \"*\" \"*\" * [*] *'  as @datetime, @method, @longrequest, @protocol, @responsecode, @size, @httpreferer, @agent, @xforwardedfor, @host, @responsetime, @correlationid\n| parse @longrequest '/*/*' as @tenant, @shortrequest\n| fields concat('/', @shortrequest) as @request\n| filter @agent not like \"ELB-HealthChecker\"\n| filter @agent not like \"Amazon-Route53-Health-Check-Service\"\n| filter @request not like \"/oauth/token\"\n| sort @timestamp desc\n| limit 100\n| display @timestamp, @method, @request, @responsecode, @host, @tenant, @responsetime, @size, @agent, @xforwardedfor, @correlationid",
                             "region": "${AWS::Region}",
                             "stacked": false,
                             "title": "Log group: /aws/elasticbeanstalk/${BeanstalkEnvName}/var/log/nginx/access.log",

@@ -28,9 +28,20 @@ Parameters:
     Type: String
     Description: Select partner for which Starting Blocks environment will be deployed.
     Default: 'ea'
+  LambdaDefaultSGID:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security Group ID to use with the Lambda Functions by default.'
+  PrivateSubnet1Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the private subnet 1 in Availability Zone 1 (e.g., subnet-a0246dcd)
+  PrivateSubnet2Id:
+    Type: AWS::EC2::Subnet::Id
+    Description: ID of the private subnet 2 in Availability Zone 2 (e.g., subnet-a0246dcd)
 Resources:
   S3SwaggerFEBucket:
     Type: AWS::S3::Bucket
+    # checkov:skip=CKV_AWS_18: Ensure the S3 bucket has access logging enabled
+    # S3 bucket does not need access logging enabled as it is not publicly accessible and does not contain PII.
     UpdateReplacePolicy: Retain
     DeletionPolicy: Delete
     Properties:
@@ -38,6 +49,13 @@ Resources:
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
       Tags:
         - Key: EnvLabel
           Value: !Ref EnvLabel
@@ -50,9 +68,9 @@ Resources:
           - Action:
               - 's3:GetObject'
             Effect: Allow
-            Resource: !Sub 'arn:aws:s3:::${S3SwaggerFEBucket}/*'
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${S3SwaggerFEBucket}/*'
             Principal:
-              AWS: !Sub 'arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}'
+              AWS: !Sub 'arn:${AWS::Partition}:iam::cloudfront:user/CloudFront Origin Access Identity ${CloudFrontOriginAccessIdentity}'
   CloudFrontOriginAccessIdentity:
     Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
     Properties:
@@ -73,6 +91,7 @@ Resources:
       Path: /
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
         - PolicyName: 'AllowActions'
           PolicyDocument:
@@ -80,15 +99,22 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - acm:ListCertificates
-                  - acm:DescribeCertificate
                   - acm:RequestCertificate
                   - acm:DeleteCertificate
-                  - route53:ListHostedZonesByName
                   - route53:ChangeResourceRecordSets
+                  - acm:DescribeCertificate
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:route53:::hostedzone/${HostedZoneId}'
+                  - !Sub 'arn:${AWS::Partition}:acm:${AWS::Region}:${AWS::AccountId}:*'
+                  - !Sub 'arn:${AWS::Partition}:acm:us-east-1:${AWS::AccountId}:certificate/*'
+              - Effect: Allow
+                Action:
+                  - acm:ListCertificates
+                  - route53:ListHostedZonesByName
                 Resource: '*'
   East1CertFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
     Properties:
       Handler: index.lambda_handler
       Layers:
@@ -97,6 +123,13 @@ Resources:
       FunctionName: !Sub '${EnvLabel}-swagger-east-1-cert'
       Role: !GetAtt 'East1CertRole.Arn'
       Runtime: python3.11
+      ReservedConcurrentExecutions: 1
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaDefaultSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
       Timeout: 600
       Code:
         ZipFile: |
@@ -259,6 +292,9 @@ Resources:
 
   CloudFront:
     Type: AWS::CloudFront::Distribution
+    # checkov:skip=CKV_AWS_68: CloudFront Distribution should have WAF enabled
+    # CloudFront is in front of S3 in this case which hosts static files. We accept the risk for static content in forgoing WAF in this case.
+    # checkov:skip=CKV_AWS_86: Ensure CloudFront Distribution has Access Logging enabled
     Properties:
       DistributionConfig: 
         DefaultRootObject: index.html
@@ -332,7 +368,6 @@ Resources:
         Statement:
           - Effect: Allow
             Action:
-              - ec2:DescribeSubnets
               - ec2:DescribeAvailabilityZones
             Resource:
               - '*'
@@ -340,7 +375,7 @@ Resources:
             Action:
               - cloudfront:CreateInvalidation
             Resource: 
-              - !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFront}' 
+              - !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${CloudFront}' 
           - Effect: Allow
             Action:
               - s3:DeleteObject
@@ -351,8 +386,8 @@ Resources:
               - s3:ListBucketVersions
               - s3:PutObject
             Resource: 
-              - !Sub 'arn:aws:s3:::${S3SwaggerFEBucket}'
-              - !Sub 'arn:aws:s3:::${S3SwaggerFEBucket}/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::${S3SwaggerFEBucket}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${S3SwaggerFEBucket}/*'
       Roles:
         - !Ref 'SwaggerLambdaRole'
   SwaggerLambdaAWSCLILayer:
@@ -372,13 +407,17 @@ Resources:
     DeletionPolicy: Delete
     Properties:
       ServiceToken: !GetAtt SwaggerUpdateLambda.Arn
+      Bump: 1  # fake parameter to cause the function to run in existing deployments.
   SwaggerUpdateLambda:
     Type: 'AWS::Lambda::Function'
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Layers:
         - !Ref SwaggerLambdaAWSCLILayer
         - !Ref 'CRHelperLambdaLayer'
-      Description: Creates lambda to update Swagger UI
+      ReservedConcurrentExecutions: 1
+      Description: Updates and deploys Swagger UI in S3
       Handler: index.lambda_handler
       Environment:
         Variables:
@@ -388,6 +427,12 @@ Resources:
       Runtime: python3.11
       MemorySize: 128
       Role: !GetAtt 'SwaggerLambdaRole.Arn'
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaDefaultSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
       Timeout: 60
       Code:
         ZipFile: |
@@ -444,7 +489,7 @@ Resources:
               )
               content = content.replace(
                 'deepLinking: true,',
-                'deepLinking: true, showExtensions: true,'
+                'deepLinking: true, showExtensions: true, docExpansion: "none",'
               )
               print(content)
 
@@ -500,4 +545,4 @@ Outputs:
     Value: !Ref CloudFront
   SwaggerURL:
     Description: The URL for swagger
-    Value: !Join ['', ['swagger-ui.', !Ref DomainName]]
+    Value: !Sub 'swagger-ui.${DomainName}'

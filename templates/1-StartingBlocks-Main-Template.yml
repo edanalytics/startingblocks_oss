@@ -8,46 +8,66 @@ Metadata:
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
-          default: Template information
+          default: General Information
         Parameters:
           - EnvLabel
-          - S3SourceBucket
           - HostedZoneId
           - DomainName
           - Partner
       - Label:
-          default: EdFi ODS API Environment Information
+          default: Versions and Features
         Parameters:
+          - EdFiApiVersion
+          - DataStandardVersion
+          - PostgresVersion
+          - AdminInterface
+          - DeploySwagger
+          - APIPublisher
+      - Label:
+          default: Deployment Files
+        Parameters:
+          - S3SourceBucket
+          - ArtifactsS3SourceBucket
           - WebApiZipFile
           - DatabaseArtifact
-          - EnvironmentSize
-          - PostgresVersion
-          - DatabaseType
-          - DeployReplica
+      - Label:
+          default: Ed-Fi Options
+        Parameters:
           - EdFiTenancyMode
           - DatabaseData
-          - DataStandardVersion
-          - APIPublisher
-          - AdminInterface
-          - AdminApiCIDRs
-          - AdminAccountIds
-          - DeploymentStrategy
+          - BearerTokenPerClientLimit
+      - Label:
+          default: Capacity and Scaling
+        Parameters:
+          - EnvironmentSize
           - WebAPIMinInstances
           - WebAPIMaxInstances
           - SpotFleetPercentage
+          - DatabaseType
+          - DeployReplica
           - WebAPIMaxPoolSize
           - WebAPIConnectionIdleLifetime
-          - WebACLArn
-          - SSLPolicy
-          - SNSTopicArn
-          - DeploySwagger
-          - SlackWebhookUrl
       - Label:
-          default: SSH Server Options
+          default: Security Options
         Parameters:
+          - SSLPolicy
+          - AdminApiCIDRs
+          - AdminAccountIds
+          - WebACLArn
           - SSHServerParentStack
       - Label:
-          default: Provide Your Own Existing VPC Network Configuration
+          default: Monitoring and Alerting
+        Parameters:
+          - S3AccessLogBucket
+          - SNSTopicArn
+          - SlackWebhookUrl
+      - Label:
+          default: Maintenance Options
+        Parameters:
+          - DeploymentStrategy
+          - BeanstalkPlatformUpdateTime  
+      - Label:
+          default: VPC Network Configuration
         Parameters:
           - VpcId
           - PublicSubnet1Id
@@ -58,6 +78,8 @@ Metadata:
     ParameterLabels:
       S3SourceBucket:
         default: S3 Bucket name containing this template
+      ArtifactsS3SourceBucket: 
+        default: Artifact source
       VpcId:
         default: VPC ID
       PublicSubnet1Id:
@@ -75,9 +97,9 @@ Metadata:
       WebAPIMaxInstances:
         default: Maximum Web API Instances
       SpotFleetPercentage:
-        default: The percentage of On-Demand Instances.
+        default: Percentage of On-Demand Instances
       WebAPIMaxPoolSize:
-        default: Maximun Pool Size per Application Server
+        default: Database connection pool size
       WebAPIConnectionIdleLifetime:
         default: Connection Idle Lifetime
       WebACLArn:
@@ -86,14 +108,16 @@ Metadata:
         default: Initial ODS API Database Data Set
       DataStandardVersion:
         default: Data Standard Version
+      EdFiApiVersion:
+        default: Ed-Fi API Version
       DeployReplica:
         default: Deploy Read Replica
       PostgresVersion:
         default: PostgreSQL Version
       EdFiTenancyMode:
-        default: EdFi Tenancy Mode
+        default: Ed-Fi Tenancy Mode
       WebApiZipFile:
-        default: Name of the zip file containing the EdFi WebApi packaged for Elastic Beanstalk
+        default: Elastic Beanstalk zip file for Ed-Fi WebApi
       DatabaseArtifact:
         default: Database Artifact
       EnvironmentSize:
@@ -101,35 +125,47 @@ Metadata:
       EnvLabel:
         default: Label your environment
       SSHServerParentStack:
-        default: Existing SSH server stack (optional)
+        default: SSH server stack
       DatabaseType:
-        default: The database type for your environment
+        default: Aurora compute capacity mode
       APIPublisher:
         default: API Publisher Support
       AdminApiCIDRs:
-        default: Network Address ranges (CIDR) to allow connections to the Admin Api
+        default: Admin Api allowed CIDR ranges
       AdminAccountIds:
-        default: AWS Account ID's to allow to invoke admin Lambda functions
+        default: AWS Account ID's allowed to invoke admin Lambda functions
       AdminInterface:
         default: Admin Interface
       DomainName:
-        default: Domain Name to generate a wildcard SSL certificate for.  DO NOT include '*.'
+        default: Domain Name
       HostedZoneId:
-        default: Route53 zone to create the records in
+        default: Route53 zone
       Partner:
-        default: Partner name for which environment will be deployed.
+        default: Partner name
       SSLPolicy:
-        default: SSL Policy for ALB.
+        default: SSL Policy
       SNSTopicArn:
-        default: Centralized SNS topic
+        default: SNS topic
       DeploySwagger:
         default: Deploy Swagger UI
       SlackWebhookUrl:
-        default: The URL of the Slack webhook to send notifications to.
+        default: Slack webhook URL
+      S3AccessLogBucket:
+        default: S3 bucket for ELB Access Logs
+      BeanstalkPlatformUpdateTime: 
+        default: Elastic Beanstalk automatic platform update schedule
+      BearerTokenPerClientLimit:
+        default: Bearer Token Per Client Limit
 Parameters:
   S3SourceBucket:
     Type: String
-    Description: This bucket contains the source files for CF, Lambda, Docker, etc.  MUST be in the same region as the CF Stack.
+    Description: This bucket contains the source files for CloudFormation and Lambda layers.  MUST be in the same region as the CF Stack.
+  ArtifactsS3SourceBucket:
+    Type: String
+    Description: EA provides a central artifact store for standard Ed-Fi deployments.  If you use extensions or wish to customize the deployment in another way, you must place your artifacts in the database/ and docker/ folders in the S3 bucket named above. 
+    AllowedValues: 
+      - Use artifacts from EA's central artifact store
+      - Use my own custom artifacts in the CloudFormation bucket
   EnvironmentSize:
     AllowedValues:
       - small
@@ -137,19 +173,21 @@ Parameters:
       - large
       - xlarge
       - 2xlarge
+      - 4xlarge
+      - 8xlarge
     Default: small
     Description: Select the size of the environment to launch.  Smaller is cheaper but less performant. 
     Type: String
   WebApiZipFile:
     Default: 'default'
-    Description: If using a custom Ed-Fi build, provide the zip file name here.  Use 'default' to deploy stock Ed-Fi build for the chosen DataStandard version.
+    Description: If using a custom Ed-Fi build, provide the zip file name here.  Use 'default' to deploy the stock Ed-Fi build for the chosen Ed-Fi API and DataStandard versions.
     Type: String
   DatabaseArtifact:
     Default: 'default'
-    Description: If using custom databases, provide the database artifact name here.  Use 'default' to deploy stock Ed-Fi databases for the chosen DataStandard version.
+    Description: If using custom databases, provide the database artifact name here.  Use 'default' to deploy stock Ed-Fi databases for the chosen Ed-Fi API and DataStandard versions.  Do not change this parameter after initial stack deployment.
     Type: String
   EnvLabel:
-    Description: Provide a unique label for your environment to identify resources.  You cannot use an label name that is already in use.
+    Description: Provide a unique label for your environment to identify resources.  You cannot use a label that is already in use.
     Type: String
   DomainName:
     Description: The fully qualified domain name to be used for this ODS
@@ -179,22 +217,22 @@ Parameters:
     Description: The Subnet ID of a Private Subnet in the other Availability Zone above
     ConstraintDescription: You must select an existing Private Subnet ID in the VPC selected for this deployment
   SSHServerParentStack:
-    Description: Stack name for the existing SSH server parent stack
+    Description: Stack name for the existing SSH server parent stack based on EA's standard SSH server template. (optional)
     Type: String
   APIPublisher:
     AllowedValues:
       - 'true'
       - 'false'
     Default: 'false'
-    Description: Would you like to deploy resources to support API Publisher?
+    Description: Deploys resources to enable the 'snapshot' ODS derivative type, and fix ChangeVersions in cloned databases. 
     Type: String
   AdminApiCIDRs:
-    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))(,(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2])))*$
+    AllowedPattern: '^$|^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))(,(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2])))*$'
     Description: |
       For security reasons we recommend that you only enable trusted IPs for external access to the Admin Api.  
       This should be a comma separated list of trusted networks in CIDR notation (X.X.X.X/X). 
       The StartingBlocks Admin App IP's, and the Education Analytics office IP range are as follows.
-      (18.119.27.161/32,3.135.55.248/32,172.102.6.120/29)
+      (18.119.27.161/32,3.135.55.248/32,172.102.6.120/29). (optional)
     Type: String
   AdminInterface:
     Description: The interface that will provide management functions for this environment.
@@ -206,32 +244,34 @@ Parameters:
   AdminAccountIds:
     Description: | 
       When using StartingBlocks Admin App, these (comma separated) AWS Account ID's will be given permission to invoke the management Lambda Functions.
-      Account ID 179685256884 will allow the Education Analytics StartingBlocks Admin App.
+      Account ID 179685256884 will allow the Education Analytics StartingBlocks Admin App. (optional)
     Type: String
-    AllowedPattern: "^[0-9]{12}(,[0-9]{12})*$"
+    AllowedPattern: '^$|^[0-9]{12}(,[0-9]{12})*$'
   EdFiTenancyMode:
-    Description: The tenancy mode that Ed-Fi will run in.
+    Description: The tenancy mode that Ed-Fi will run in.  Note that 'SingleTenant' is not compatible with StartingBlocks Admin App.
     AllowedValues:
       - 'SingleTenant'
       - 'MultiTenant'
     Default: 'MultiTenant'
     Type: String
   PostgresVersion:
-    Description: Ed-Fi Alliance officially supports Postgres 13 with Ed-Fi 7.x
+    Description: Ed-Fi Alliance officially supports Postgres 16 with Ed-Fi 7.x
     Type: String
     AllowedValues:
-      - 'Thirteen'
-      - 'Fourteen'
       - 'Fifteen'
-    Default: 'Fifteen'
+      - 'Sixteen'
+    Default: 'Sixteen'
   DatabaseType:
-    Description: Aurora compute capacity mode.
+    Description: |
+      Provisioned capacity provides a database server of fixed size, and does not auto-scale.  Provisioned capacity is cheaper for development environments, and may be eligible for some AWS savings plans.
+      Serverless mode allows for rapid auto scaling of the database compute.  Serverless mode is often more expensive, but can provide improved performance in unpredictable production environments.
     Type: String
     Default: "Provisioned"
     AllowedValues:
       - "Provisioned"
       - "Serverless"
   DatabaseData:
+    Description: For SingleTenant deployments, pick the template that will be used to create the default ODS.  For MultiTenant deployments, a default ODS is not created in CloudFormation and both templates are imported for later use.
     Type: String
     Default: minimal
     AllowedValues:
@@ -244,46 +284,63 @@ Parameters:
     AllowedValues:
       - DS4
       - DS5
+      - DS5.1
+      - DS5.2
+  EdFiApiVersion:
+    Type: String
+    Description: Which version of the Ed-Fi API should be deployed.  This can NOT be changed later.
+    Default: "7.1"
+    AllowedValues:
+      - "7.1"
+      - "7.2"
+      - "7.3"
   DeployReplica:
     AllowedValues:
       - 'true'
       - 'false'
     Default: 'false'
-    Description: Would you like your database to use a read replica? This will increase the cost of the environment, but imporve performance and provide for an immediate failover database.
+    Description: This will double the cost of the database, but should improve read performance and provide faster failover.
     Type: String
   DeploymentStrategy:
     Type: String
-    Description: Beanstalk deployment strategy for platform updates and application versions.
+    Description: |
+      RollingWithAdditionalBatch will deploy new code and platform updates by adding new servers one at a time.  This option avoids downtime and is recommended for production deployments.
+      AllAtOnce will deploy new code and platform updates to every server at the same time.  This option is faster but the environment will be unavailable until the deployment is complete.
     AllowedValues:
       - 'RollingWithAdditionalBatch'
       - 'AllAtOnce'
     Default: 'RollingWithAdditionalBatch'
+  BeanstalkPlatformUpdateTime:
+    Description: Specify the update day and time in UTC using the format 'Day:HH:MM' (e.g., Wed:15:30). Platform updates will be disabled if no value is specified. (optional)
+    Type: String
+    AllowedPattern: '^$|^(Mon|Tue|Wed|Thu|Fri|Sat|Sun):(0[0-9]|1[0-9]|2[0-3]):[0-5][0-9]$'
+    Default: "Wed:15:30"
   WebAPIMinInstances:
     Type: Number
-    Description: Minimum Application Server Capacity for Web API Stack.
+    Description: Minimum number of Ed-Fi Web API servers.  There will always be this number of servers available.
     Default: 1
   WebAPIMaxInstances:
     Type: Number
-    Description: Maximum Application Server Capacity for Web API Stack.
+    Description: Maximum number of Ed-Fi Web API servers.  The environment will scale up 1 instance at a time up to this limit.
     Default: 3
   SpotFleetPercentage:
     Type: Number
-    Description: The percentage of On-Demand Instances as part of additional capacity that your Auto Scaling group provisions beyond the SpotOnDemandBase instances.
+    Description: While scaling up, the next 2 Ed-Fi Web API servers will be On-Demand.  After that, this percentage will also be On-Demand and the remaining will be Spot Instances.
     Default: 70
   WebAPIMaxPoolSize:
     Type: Number
-    Description: Maximun pool size for connections to the Ed-Fi ODS database
+    Description: Each Ed-Fi Web Api server will be able to make this many connections to each ODS database.
     Default: 200
   WebAPIConnectionIdleLifetime:
     Type: Number
-    Description: Connection idle lifetime for connections to the Ed-Fi ODS database
+    Description: Connection idle lifetime (seconds) for connections to the Ed-Fi ODS database.
     Default: 120
   WebACLArn:
     Type: String
     Description: Provide the ARN of a WAF to attach to the Web API (optional)
   Partner:
     Type: String
-    Description: Enter partner for which Starting Blocks environment will be deployed.
+    Description: Enter the acronym for the organization using this environment.  Used for additional uniqueness in S3 bucket names, and additional context in alerts.
     Default: 'ea'
   SSLPolicy:
     Description: Policy to determine which ssl/tls ciphers are accepted. Aeries Districts use ELBSecurityPolicy-TLS13-1-2-2021-06.
@@ -297,7 +354,7 @@ Parameters:
     Type: String
   DeploySwagger:
     Type: String
-    Description: Will deploy Swagger UI to swagger-ui.{DomainName}
+    Description: If enabled, Swagger UI will be deployed to swagger-ui.{DomainName}
     AllowedValues:
       - 'True'
       - 'False'
@@ -305,12 +362,20 @@ Parameters:
   SlackWebhookUrl:
     Type: String
     Description: The URL of the Slack webhook to send notifications to (optional).
+  S3AccessLogBucket:
+    Type: String
+    Description: Name of S3 bucket to store access logs for ELB.  Must be in the same region as the CF Stack. (optional)
+  BearerTokenPerClientLimit:
+    Type: Number
+    Description: The maximum number of bearer tokens that can be issued to a single client in 30 minutes. (Version 7.3+)
+    Default: 15
 Mappings: 
   PostgreSQLInformation:
     EngineVersion:
-      "Thirteen": "13.12"
-      "Fourteen": "14.9"
-      "Fifteen": "15.3"
+      "Thirteen": "13.18"
+      "Fourteen": "14.15"
+      "Fifteen": "15.10"
+      "Sixteen": "16.6"
     EngineEdition:
       "Standard": "postgres"
     AccountInfo: 
@@ -321,36 +386,47 @@ Mappings:
       "large": "db.r6g.large"
       "xlarge": "db.r6g.xlarge"
       "2xlarge": "db.r6g.2xlarge"
+      "4xlarge": "db.r7g.4xlarge"
+      "8xlarge": "db.r7g.8xlarge"
     MinServerlessCapacity:
       "small": 0.5
       "medium": 1
       "large": 2
       "xlarge": 4
       "2xlarge": 8
+      "4xlarge": 16
+      "8xlarge": 32
     MaxServerlessCapacity:
-      "small": 2
-      "medium": 4
-      "large": 8
-      "xlarge": 16
-      "2xlarge": 32
+      "small": 3
+      "medium": 6
+      "large": 12
+      "xlarge": 24
+      "2xlarge": 48
+      "4xlarge": 96
+      "8xlarge": 192
     AppServerSize:
       "small": "t3a.medium,t3.medium"
       "medium": "t3.large,t3a.large"
       "large": "t3.large,t3a.large"
-      "xlarge": "m6i.large,m6a.large"
-      "2xlarge": "m6i.xlarge,m6a.xlarge"
+      "xlarge": "m7a.large,m7i.large,m6a.large,m6i.large"
+      "2xlarge": "c7a.xlarge,m7a.xlarge,c7i.xlarge,m7i.xlarge"
+      "4xlarge": "c7a.2xlarge,m7a.2xlarge,c7i.2xlarge,m7i.2xlarge"
+      "8xlarge": "c7a.2xlarge,m7a.2xlarge,c7i.2xlarge,m7i.2xlarge"
     AdminServerSize:
       "small": "t3a.small,t3.small"
       "medium": "t3a.small,t3.small"
       "large": "t3a.small,t3.small"
       "xlarge": "t3a.medium,t3.medium"
       "2xlarge": "t3a.medium,t3.medium"
-    SSHServerSize:
-      "small": "t4g.micro"
-      "medium": "t4g.micro"
-      "large": "t4g.small"
-      "xlarge": "t4g.small"
-      "2xlarge": "t4g.small"
+      "4xlarge": "t3a.medium,t3.medium"
+      "8xlarge": "t3a.medium,t3.medium"
+  EdFiApiVersionPatch: 
+    "7.1":
+      "Patch": "6238" # Patch 4
+    "7.2":
+      "Patch": "6237" # Patch 2
+    "7.3":
+      "Patch": "6252" # Patch 1
 Conditions:
   UsePopulatedData: !Equals
     - !Ref 'DatabaseData'
@@ -369,6 +445,9 @@ Conditions:
     - !Ref 'DeploySwagger'
     - 'True'
   EnableSlackNotifications: !Not [!Equals [!Ref SlackWebhookUrl, '']]
+  UseDefaultArtifactsS3Bucket: !Equals
+    - !Ref ArtifactsS3SourceBucket
+    - "Use artifacts from EA's central artifact store"
 Rules:
   SubnetsInVPC:
     Assertions:
@@ -378,11 +457,32 @@ Rules:
             - VpcId
           - !RefAll 'AWS::EC2::VPC::Id'
         AssertDescription: All subnets provided must be in the VPC selected for use
+  EdFiApiVersionToDataStandard:
+    Assertions:
+      - Assert: !Or
+          - !And 
+            - !Equals [!Ref EdFiApiVersion, "7.1"]
+            - !Or
+              - !Equals [!Ref DataStandardVersion, "DS4"]
+              - !Equals [!Ref DataStandardVersion, "DS5"]
+          - !And 
+            - !Equals [!Ref EdFiApiVersion, "7.2"]
+            - !Or
+              - !Equals [!Ref DataStandardVersion, "DS4"]
+              - !Equals [!Ref DataStandardVersion, "DS5.1"]
+          - !And 
+            - !Equals [!Ref EdFiApiVersion, "7.3"]
+            - !Or
+              - !Equals [!Ref DataStandardVersion, "DS4"]
+              - !Equals [!Ref DataStandardVersion, "DS5.2"]
+        AssertDescription: DataStandardVersion must be compatible with Ed-Fi API version selected.
 
 Resources:
   # Shared Resources stack deploys IAM, KMS, Security Groups, Secrets, Certificate, ALB, DynamoDB and Route53 resources
   SharedResourcesStack:
     Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-shared-resources.yml'
       Parameters:
@@ -397,15 +497,22 @@ Resources:
         DomainName: !Ref 'DomainName'
         HostedZoneId: !Ref 'HostedZoneId'
         SSLPolicy: !Ref SSLPolicy
+        S3AccessLogBucket: !Ref S3AccessLogBucket
 
   LambdaCoreStack:
     Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-lambda-core-functions.yml'
       Parameters:
         AdminInterface: !Ref AdminInterface
         AdminAccountIds: !Ref AdminAccountIds
         S3BucketSourceCode: !Ref 'S3SourceBucket'
+        ArtifactsS3SourceBucket: !If 
+          - UseDefaultArtifactsS3Bucket
+          - !Sub 'startingblocks-edfi-artifacts-${AWS::Region}'
+          - !Ref 'S3SourceBucket'
         S3KeySourceCode: lambdas
         PrivateSubnet1Id: !Ref 'PrivateSubnet1Id'
         PrivateSubnet2Id: !Ref 'PrivateSubnet2Id'
@@ -422,9 +529,12 @@ Resources:
         APIPublisher: !Ref APIPublisher
         SNSTopicArn: !Ref SNSTopicArn
         SlackWebhookUrl: !Ref SlackWebhookUrl
-
+        KmsKeyId: !GetAtt 'SharedResourcesStack.Outputs.KeyId'
+        
   DatabaseStack:
     Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-aurora-postgres-db.yml'
       Parameters:
@@ -463,9 +573,11 @@ Resources:
         CWRetentionLambdaArn: !GetAtt 'LambdaCoreStack.Outputs.SetCloudWatchRetentionFunctionArn'
 
   LambdaRDSRestoreStack:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     DependsOn: 
       - DatabaseStack
-    Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-restore-databases.yml'
       Parameters:
@@ -473,24 +585,27 @@ Resources:
         RestoreMinimalDB: !If [UsePopulatedData, 'no', 'yes']
         RestorePopulatedDB: !If [UsePopulatedData, 'yes', 'no']
         EdFiTenancyMode: !Ref EdFiTenancyMode
-        S3SourceBucket: !Ref 'S3SourceBucket'
+        S3SourceBucket: !If 
+          - UseDefaultArtifactsS3Bucket
+          - !Sub 'startingblocks-edfi-artifacts-${AWS::Region}'
+          - !Ref 'S3SourceBucket'
         S3SourceKeyName: 'database'
         AdminDbS3Name: !If 
           - UseDefaultDatabase
-          - !Sub 'EdFi_Admin_7.1_${DataStandardVersion}'
+          - !Sub 'EdFi_Admin_${EdFiApiVersion}_${DataStandardVersion}'
           - !Sub 'EdFi_Admin_${DatabaseArtifact}'
-        AdminApiDbS3Name: 'EdFi_Admin_Api_2.0'
+        AdminApiDbS3Name: 'EdFi_Admin_Api_2.2'
         SecurityDbS3Name: !If 
           - UseDefaultDatabase
-          - !Sub 'EdFi_Security_7.1_${DataStandardVersion}'
+          - !Sub 'EdFi_Security_${EdFiApiVersion}_${DataStandardVersion}'
           - !Sub 'EdFi_Security_${DatabaseArtifact}'
         MinimalDbS3Name: !If 
           - UseDefaultDatabase
-          - !Sub 'EdFi_Ods_Minimal_Template_TPDM_Core_7.1_${DataStandardVersion}'
+          - !Sub 'EdFi_Ods_Minimal_Template_TPDM_Core_${EdFiApiVersion}_${DataStandardVersion}'
           - !Sub 'EdFi_Ods_Minimal_Template_${DatabaseArtifact}'
         PopulatedDbS3Name: !If 
           - UseDefaultDatabase
-          - !Sub 'EdFi_Ods_Populated_Template_TPDM_Core_7.1_${DataStandardVersion}'
+          - !Sub 'EdFi_Ods_Populated_Template_TPDM_Core_${EdFiApiVersion}_${DataStandardVersion}'
           - !Sub 'EdFi_Ods_Populated_Template_${DatabaseArtifact}'
         LambdaFunctionName: !GetAtt 'LambdaCoreStack.Outputs.DatabaseRestoreLambdaFunctionName'
         DeployReplica: !Ref DeployReplica
@@ -498,8 +613,10 @@ Resources:
         APIPublisher: !Ref APIPublisher
 
   WebApiBeanstalkStack:
-    DependsOn: LambdaRDSRestoreStack
     Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    DependsOn: LambdaRDSRestoreStack
     Properties:
       TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-beanstalk-web-api.yml'
       Parameters:
@@ -511,7 +628,10 @@ Resources:
         PrivateSubnet1Id: !Ref 'PrivateSubnet1Id'
         PrivateSubnet2Id: !Ref 'PrivateSubnet2Id'
         EC2SecurityGroup: !GetAtt 'SharedResourcesStack.Outputs.WebApiServerSecurityGroupID'
-        S3BucketName: !Ref 'S3SourceBucket'
+        S3BucketName: !If 
+          - UseDefaultArtifactsS3Bucket
+          - !Sub 'startingblocks-edfi-artifacts-${AWS::Region}'
+          - !Ref 'S3SourceBucket'
         InstanceTypes: !FindInMap
           - PostgreSQLInformation
           - AppServerSize
@@ -520,9 +640,11 @@ Resources:
         IamInstanceProfile: !GetAtt 'SharedResourcesStack.Outputs.ElasticBeanstalkEC2InstanceProfileName'
         RDSSecret: !GetAtt 'SharedResourcesStack.Outputs.AuroraMasterSecret'
         EdFiTenancyMode: !Ref 'EdFiTenancyMode'
-        WebApiZipFile: !If 
+        WebApiZipFile: !If
           - UseDefaultWebApiZip
-          - !Sub 'WebApi-7.1.5125c-${DataStandardVersion}.zip'
+          - !Sub
+              - "WebApi-${EdFiApiVersion}.${PatchVersion}-${DataStandardVersion}.zip"
+              - { PatchVersion: !FindInMap [EdFiApiVersionPatch, !Ref EdFiApiVersion, Patch] }
           - !Ref 'WebApiZipFile'
         SnsToSlackLambdaArn: !If
           - EnableSlackNotifications
@@ -532,6 +654,7 @@ Resources:
         DomainName: !Ref 'DomainName'
         AccessRestriction: '*.DomainName'
         DeploymentStrategy: !Ref DeploymentStrategy
+        BeanstalkPlatformUpdateTime: !Ref BeanstalkPlatformUpdateTime
         WebAPIMaxPoolSize: !Ref WebAPIMaxPoolSize
         WebAPIConnectionIdleLifetime: !Ref WebAPIConnectionIdleLifetime
         SharedAlbArn: !GetAtt 'SharedResourcesStack.Outputs.SharedAlbArn'
@@ -540,11 +663,14 @@ Resources:
         East1AlarmLambdaArn: !If [EnableHealthCheck, !GetAtt 'LambdaCoreStack.Outputs.East1AlarmLambdaArn', '']
         UploadAndDeployArn: !GetAtt 'LambdaCoreStack.Outputs.BeanstalkUploadAndDeployFunctionArn'
         Partner: !Ref 'Partner'
+        BearerTokenPerClientLimit: !Ref BearerTokenPerClientLimit
 
   AdminApiStack:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Condition: UseAdminApi
     DependsOn: LambdaRDSRestoreStack
-    Type: AWS::CloudFormation::Stack
     Properties:
       TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-beanstalk-admin-api.yml'
       Parameters:
@@ -556,19 +682,26 @@ Resources:
           - PostgreSQLInformation
           - AdminServerSize
           - !Ref EnvironmentSize
+        BeanstalkServiceRole: !GetAtt 'SharedResourcesStack.Outputs.ElasticBeanstalkServiceRoleName'
         EC2SecurityGroup: !GetAtt 'SharedResourcesStack.Outputs.AdminApiServerSecurityGroupID'
         IamInstanceProfile: !GetAtt 'SharedResourcesStack.Outputs.ElasticBeanstalkEC2InstanceProfileName'
         RDSSecret: !GetAtt 'SharedResourcesStack.Outputs.AuroraMasterSecret'
         DomainName: !Ref 'DomainName'
-        S3BucketName: !Ref 'S3SourceBucket'
+        S3BucketName: !If 
+          - UseDefaultArtifactsS3Bucket
+          - !Sub 'startingblocks-edfi-artifacts-${AWS::Region}'
+          - !Ref 'S3SourceBucket'
         EdFiTenancyMode: !Ref 'EdFiTenancyMode'
         DeploymentStrategy: !Ref DeploymentStrategy
+        BeanstalkPlatformUpdateTime: !Ref BeanstalkPlatformUpdateTime
         UploadAndDeployArn: !GetAtt 'LambdaCoreStack.Outputs.BeanstalkUploadAndDeployFunctionArn'
         SharedAlbArn: !GetAtt 'SharedResourcesStack.Outputs.SharedAlbArn'
         SharedAlbAdminApiListenerArn: !GetAtt 'SharedResourcesStack.Outputs.SharedAlbAdminApiListenerArn'
 
   CloudWatchDashboardStack:
     Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-cloudwatch-dashboard.yml'
       Parameters:
@@ -581,8 +714,10 @@ Resources:
         TargetGroupArn: !GetAtt 'WebApiBeanstalkStack.Outputs.TargetGroupArn'
 
   SwaggerStack:
-    Condition: DeploySwaggerTemplate
     Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Condition: DeploySwaggerTemplate
     Properties:
       TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-swagger.yml'
       Parameters:
@@ -593,6 +728,19 @@ Resources:
         SwaggerDefaultURL: !Sub 'https://swaggerui.${DomainName}/metadata/data/v3/resources/swagger.json'
         CRHelperLambdaLayer: !GetAtt 'LambdaCoreStack.Outputs.CRHelperLambdaLayer'
         Partner: !Ref 'Partner'
+        LambdaDefaultSGID: !GetAtt 'SharedResourcesStack.Outputs.LambdaDefaultSGID'
+        PrivateSubnet1Id: !Ref 'PrivateSubnet1Id'
+        PrivateSubnet2Id: !Ref 'PrivateSubnet2Id'
+
+  StateMachineStack:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TemplateURL: !Sub 'https://${S3SourceBucket}.s3.amazonaws.com/templates/x-state-machines.yml'
+      Parameters:
+        EnvLabel: !Ref 'EnvLabel'
+        QueryRunnerLambdaArn: !GetAtt 'LambdaCoreStack.Outputs.QueryRunnerLambdaArn'
 
 Outputs:
   WebApiDnsName:
@@ -601,10 +749,7 @@ Outputs:
     Value: !GetAtt 'WebApiBeanstalkStack.Outputs.EndpointURL'
   WebApiProdURL:
     Description: The URL of the ODS/API endpoint, after DNS is updated
-    Value: !Join
-      - ''
-      - - https://
-        - !Ref 'DomainName'
+    Value: !Sub 'https://${DomainName}'
   AdminApiProdURL:
     Condition: UseAdminApi
     Description: The URL of the Admin Api.

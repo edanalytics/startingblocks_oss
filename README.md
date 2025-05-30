@@ -2,41 +2,55 @@
 
 Welcome to the StartingBlocks Open Source repository! The artifacts in this repository will allow users to deploy a cloud native Ed-Fi ODS/API implementation using AWS resources. StartingBlocks is additionally inclusive of a suite of management functions that allow users to manage resources to configure their Ed-Fi deployment appropraitely for a variety of use cases.
 
-[Deployment Steps](./docs/sbe-deployment-steps.md)
+>[!TIP]
+>Documentation is available in the [docs](./docs/) folder in this repo, and at [docs.startingblocks.org](https://docs.startingblocks.org). 
 
-[Management and Reporting Functions Usage](./docs/sbe-functions.md)
+# Getting Started
 
-# Overall Architecture
-Below is a high level architecture diagram and inventory of <i>some</i> AWS resources deployed when using these templates. It's important to note, that once these resources are deployed, users are immediately responsible for any incurred costs, even if the environment is not being used. Please also note that there are some pre-requisite resources that are included in this diagram for informational purposes. Specifically, public subnets, VPC and private subnets must already exist prior to deploying StartingBlocks. For deployment steps [please click here](./docs/sbe-deployment-steps.md)
+## Prerequisites
+1.  You must have an AWS account
+2.  You must have deployed a custom VPC, 2 public subnets, and 2 private subnets before deploying the StartingBlocks templates. <b>It is not advisable for users to use the default VPC initially deployed by AWS</b>.
+3.  You must have created a Hosted Zone and NS record for the domain at which you intend to deploy your StartingBlocks environment(s).
 
+If you would like more guidance and support with deploying StartingBlocks, [please reach out to our team using this form.](https://edanalytics.atlassian.net/helpcenter/products-and-services/portal/15/group/45/create/300)
 
-![](./docs/imgs/StartingBlocks-OSS-diagram.svg)
+## Deployment Steps
+Steps to deploy StartingBlocks templates.
 
----
+1.  In your AWS account, create an S3 bucket that will be used to hold the StartingBlocks templates. 
+Example bucket name:
+    -  `{orgname}-{environment label}-{version}-cloudformation` 
+    - `EducationAnalytics-Prod2425-7.1-cloudformation`
+#####
+        aws s3api create-bucket --bucket my-cfn-bucket
+2.  Clone the StartingBlocks OSS repository to your local workstation and checkout the relevant version branch.
+    - All Ed-Fi ODS/API 7.x versions can be deployed from the StartingBlocks `7.x` branch.  Use this branch to deploy Ed-Fi API 7.1, 7.2, or 7.3.
+#####
+        git clone https://github.com/edanalytics/startingblocks_oss.git
+        cd startingblocks_oss
+        git checkout 7.x
+3.  Upload the contents of the repository to your S3 bucket location. You can do this via AWS CLI or dragging the folders from your file explorer to the S3 console for your bucket.
+#####
+        aws s3 sync . s3://my-cfn-bucket/ --exclude ".git/*"
+4.  Copy the S3 URL for the `templates > 1-StartingBlocks-Main-Template.yml` file.
+#####
+        https://my-cfn-bucket.s3.REGION.amazonaws.com/templates/1-StartingBlocks-Main-Template.yml
+1.  Navigate to the [CloudFormation console](https://us-east-2.console.aws.amazon.com/cloudformation/) in AWS. Create a new stack with new resources.
+2.  Select `Template is ready > Amazon S3 URL` and paste your copied URL for the `1-StartingBlocks-Main-Template.yml` file into the field.
+3.  Enter stack parameter values. [Please read the doc here for more information on parameter values.](./docs/sbe-parameter-values.md)
+4.  Navigate through the various screens until you are able to start the deployment.
 
-**NOTE:**
+## Post Deploymnet Configuration
 
-Currently we do not support deployments of the Ed-Fi Admin App for StartingBlocks v7.1. There is no Admin App currently supported by the alliance that is compatible with Ed-Fi v7.x. When there is a release of the Admin App for v7.x, we are commited to supporting it in StartingBlocks.
+After a successful CloudFormation deployment of the StartingBlocks stack:
+1. Use the [TenantManagement](./docs/sbe-functions.md#variable-requirements) function to create Ed-Fi Tenants.
+2. Use the [ODSManagement](./docs/sbe-functions.md#variable-requirements-1) function to create ODSs within Tenants.
+3. Use the [EdOrgManagement](./docs/sbe-functions.md#variable-requirements-2) function to create preliminary EdOrg records within ODSs.
+    - The EdOrg records created using this function are meant to be updated with full information via integrating systems. It is not meant to create comprehensive records, but rather populate enough information to create API credentials.
+4. Use the [TenantManagement](./docs/sbe-functions.md#keygen) KeyGen action to create AdminAPI credentials for a given Tenant.
+5. Use the AdminAPI to create application (Ed-Fi API) credentials for the Tenants.
+    - [Please read the AdminAPI documentation published by the Alliance for detailed information on usage.](https://github.com/Ed-Fi-Alliance-OSS/AdminAPI-2.x)
 
----
+>[!TIP]
+>Education Analytics offers StartingBlocks as a managed service. [Inquire here](https://www.edanalytics.org/products/starting-blocks)!
 
-# Lambda Functions
-The diagram highlights that there is a suite of AWS Lambda functions used in StartingBlocks. There are Ed-Fi environment management functions, but there are also general utility functions or functions created as custom CloudFormation resources. Below is a complete inventory of Lambda functions deployed with StartingBlocks. There is also more detail specifically on the environment management functions [in our docs folder here.](./docs/sbe-functions.md) All Lambda functions deployed by CloudFormation are prefixed by the `EnvLabel` parameter value to make them easy to find in the Lambda console.
-
-## Utility Functions
-- <b>DbRestore - </b> Restores template databases on initial StartingBlocks deployments.
-- <b>EdFiBeanstalkSNSToSlack - </b> Forwards SNS messages sent from Beanstalk Env and RDS instance to Slack.
-- <b>East1Alarm - </b> Creates a Route53 Healthcheck Alarm in us-east-1.
-- <b>API-Publisher-getmaxchangeversion - </b> Optionally deployed if publisher is also deployed. Lambda Function to replace the getmaxchangeversion ODS function.
-## Custom CloudFormation Resource Functions
-- <b>EncryptionKeyGenerator - </b> CloudFormation Custom Resource provider.  Creates and stores a base64 encoded 256-bit key.
-- <b>SetCloudWatchRetention - </b> CloudFormation Custom Resource provider.  Sets retention on CloudWatch Log Groups.
-- <b>ODSDerivatives - </b> CloudFormation Custom Resource provider. Adds/removes ODS instance derivative in admin db when ODS instance derivative is created/deleted.
-## Management and Reporting Functions
-- <b>TenantManagement - </b> Used to manage Tenants in Ed-Fi 7.x environments.
-- <b>ODSManagement - </b> Used to manage ODSs in Ed-Fi 7.x environments.
-- <b>EdOrgManagement - </b> Used to managed Education Organizations in Ed-Fi 7.x environments.
-- <b>SbeMetadata - </b> Optionally Deployed if SBAA admin interface is chosen. Provides ARNs for all Lambda Ed-Fi resource management functions.
-- <b>TenantResourceTree - </b> Provides tree structure of resources in a tenant.
-- <b>DataFreshnessJson - </b> Provides a JSON output for resource counts and dates per table within a given ODS and Tenant.
-- <b>ODSUserPermissions - </b> Grants permissions to users in the ODS managed by database groups.

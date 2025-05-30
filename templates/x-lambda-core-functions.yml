@@ -31,6 +31,9 @@ Parameters:
     Default: edfi-aws-quick-deploy
     Description: This provides the name of the S3 bucket where the Lambda source code
       resides.
+  ArtifactsS3SourceBucket:
+    Type: String
+    Description: This bucket contains the source files for database/ and docker/ folders.  MUST be in the same region as the CF Stack.
   S3KeySourceCode:
     Type: String
     Default: lambdas
@@ -86,6 +89,9 @@ Parameters:
   SNSTopicArn:
     Description: ARN of SNS topic to publish Route53 HealthCheck Alarms
     Type: String
+  KmsKeyId:
+    Description: The KMS Key ID used to encrypt resources in this deployment.
+    Type: String
     
 Conditions:
   UseAdminApi: !Equals [!Ref 'AdminInterface', "Ed-Fi Admin API"]
@@ -93,6 +99,8 @@ Conditions:
     !Not [!Equals [!Ref SNSTopicArn, '']]
   UsePublisher: !Equals [!Ref APIPublisher, 'true']
   EnableSlackNotifications: !Not [!Equals [!Ref SlackWebhookUrl, '']]
+  EnableCrossAccountInvoke: !Not [!Equals [!Join [',', !Ref AdminAccountIds], '']]
+  UseAdminApiAndCrossAccountInvoke: !And [!Condition UseAdminApi, !Not [!Equals [!Join [',', !Ref AdminAccountIds], '']]]
 
 Resources:
 
@@ -181,19 +189,20 @@ Resources:
                 Action:
                   - s3:GetBucketLocation
                 Resource:
-                  - !Sub 'arn:aws:s3:::${S3BucketSourceCode}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${S3BucketSourceCode}'
               - Effect: Allow
                 Action:
                   - s3:GetObject
                 Resource:
-                  - !Sub 'arn:aws:s3:::${S3BucketSourceCode}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${S3BucketSourceCode}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactsS3SourceBucket}/*'
               - Effect: Allow
                 Action:
                   - kms:Decrypt
                   - ssm:GetParameter
                 Resource:
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
-                  - !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
+                  - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
               - Effect: Allow
                 Action: ssm:DescribeParameters
                 Resource: '*'
@@ -203,6 +212,8 @@ Resources:
 
   DatabaseRestoreLambdaFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Handler: index.lambda_handler
       Layers:
@@ -254,7 +265,6 @@ Resources:
               
               ## Download SQL file from S3
               download_s3_file_to_client_local_directory(bucket, bucket_key, "/tmp/import_file.sql")
-            
               print('SQL file downloaded')
 
               ## Set the .pgpass values and perms that we will use to connect to a database 
@@ -284,7 +294,6 @@ Resources:
                   print('Not altering database connection flag')
               
           def download_s3_file_to_client_local_directory(bucket_name,key,filename):
-
               try:
                   s3 = boto3.client('s3')
                   print("Downloading file s3://" + bucket_name + "/" + key)
@@ -301,12 +310,12 @@ Resources:
               client = boto3.client('secretsmanager')
               get_secret_value_response = client.get_secret_value(SecretId=secret_arn)
               return json.loads(get_secret_value_response['SecretString'])
-                
+              
           @helper.update
           @helper.delete
           def no_op(_, __):
               pass
-            
+
           def timeout_handler(_signal, _frame):
               '''Handle SIGALRM'''
               raise Exception('Time exceeded')
@@ -343,6 +352,7 @@ Resources:
       Path: /
   EncryptionKeyGeneratorFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
     Properties:
       Handler: index.lambda_handler
       Layers:
@@ -479,6 +489,8 @@ Resources:
   SNSToSlackFunction:
     Condition: EnableSlackNotifications
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Runtime: python3.11
       Role: !GetAtt 'SNSToSlackRole.Arn'
@@ -649,6 +661,7 @@ Resources:
       Action: 'lambda:InvokeFunction'
       FunctionName: !Ref 'SNSToSlackFunction'
       Principal: sns.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
   SNSToSlackRetention:
     Condition: EnableSlackNotifications
     DependsOn: SetCloudWatchRetentionVersion
@@ -701,17 +714,25 @@ Resources:
                 Action:
                   - ssm:SendCommand
                 Resource: 
-                  - 'arn:aws:ssm:*::document/AWS-RunShellScript'
+                  - !Sub 'arn:${AWS::Partition}:ssm:*::document/AWS-RunShellScript'
               - Effect: Allow
                 Action:
                   - ssm:SendCommand
                 Resource:
-                  - !Sub 'arn:aws:ec2:*:${AWS::AccountId}:instance/*'
+                  - !Sub 'arn:${AWS::Partition}:ec2:*:${AWS::AccountId}:instance/*'
                 Condition:
                   StringEquals:
                     "aws:ResourceTag/Environment": !Ref EnvLabel
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/${KmsKeyId}'
+
   TenantManagementFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Runtime: python3.11
       Role: !GetAtt 'TenantManagementRole.Arn'
@@ -1194,6 +1215,7 @@ Resources:
     - !Ref AdminAccountIds
     - 'TenantManagementPermission${AccountId}':
         Type: 'AWS::Lambda::Permission'
+        Condition: EnableCrossAccountInvoke
         Properties:
           Action: 'lambda:InvokeFunction'
           FunctionName: !Ref 'TenantManagementFunction'
@@ -1262,10 +1284,10 @@ Resources:
                   - logs:DescribeLogGroups
                   - logs:PutRetentionPolicy
                   - logs:CreateLogGroup
-                Resource:
-                  - '*'
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/*'
   SetCloudWatchRetentionLambdaFunction:
     Type: 'AWS::Lambda::Function'
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
     DeletionPolicy: Delete
     Properties:
       FunctionName: !Sub '${EnvLabel}-SetCloudWatchRetention'
@@ -1376,6 +1398,7 @@ Resources:
                   - s3:GetObject
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:s3:::${S3BucketSourceCode}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${ArtifactsS3SourceBucket}/*'
               - Effect: Allow
                 Action:
                   - sns:GetTopicAttributes
@@ -1387,6 +1410,7 @@ Resources:
 
   BeanstalkUploadAndDeployLambdaFunction:
     Type: 'AWS::Lambda::Function'
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
     DeletionPolicy: Delete
     Properties:
       FunctionName: !Sub '${EnvLabel}-BeanstalkUploadAndDeploy'
@@ -1546,9 +1570,11 @@ Resources:
                   - secretsmanager:GetSecretValue
                 Resource: 
                   - !Ref RDSSecret
-                  - !Sub 'arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvLabel}-WebApiSecret-*'
+                  - !Sub 'arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvLabel}-WebApiSecret-*'
   ODSManagementFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Runtime: python3.11
       Role: !GetAtt 'ODSManagementRole.Arn'
@@ -1979,7 +2005,7 @@ Resources:
                 host = host.replace('.cluster-', '.cluster-ro-')
               name = secret_values['username']
               password = secret_values['password']
-              connectionstring = (f"host={host}; database={ods_DB_name}; port=5432; username={name}; password={password}; Application Name=EdFi.Ods.WebApi; SSL Mode=Require; Trust Server Certificate=true; Maximum Pool Size={os.environ['MAXIMUM_POOL_SIZE']}; Connection Idle Lifetime={os.environ['CONNECTION_IDLE']};")
+              connectionstring = (f"host={host}; database={ods_DB_name}; port=5432; username={name}; password={password}; Application Name=EdFi.Ods.WebApi; SSL Mode=Require; Trust Server Certificate=true; Maximum Pool Size={os.environ['MAXIMUM_POOL_SIZE']}; Connection Idle Lifetime={os.environ['CONNECTION_IDLE']}; Command Timeout=60;")
               client = boto3.client('secretsmanager')
               response = client.get_secret_value(SecretId=f'{env_label}-WebApiSecret')
               base64_key = response['SecretString']
@@ -2005,6 +2031,7 @@ Resources:
     - !Ref AdminAccountIds
     - 'ODSManagementPermission${AccountId}':
         Type: 'AWS::Lambda::Permission'
+        Condition: EnableCrossAccountInvoke
         Properties:
           Action: 'lambda:InvokeFunction'
           FunctionName: !Ref 'ODSManagementFunction'
@@ -2047,9 +2074,17 @@ Resources:
                 Action:
                   - dynamodb:GetItem
                 Resource:
-                  - !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants'
+                  - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants'
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/${KmsKeyId}'
+
   EdOrgManagementFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Runtime: python3.11
       Role: !GetAtt 'EdOrgManagementRole.Arn'
@@ -2384,6 +2419,7 @@ Resources:
     - !Ref AdminAccountIds
     - 'EdOrgManagementPermission${AccountId}':
         Type: 'AWS::Lambda::Permission'
+        Condition: EnableCrossAccountInvoke
         Properties:
           Action: 'lambda:InvokeFunction'
           FunctionName: !Ref 'EdOrgManagementFunction'
@@ -2430,10 +2466,17 @@ Resources:
                 Action:
                   - dynamodb:Scan
                 Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants'
-  
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/${KmsKeyId}'
+
   SBEMetadataLambdaFunction:
     Condition: UseAdminApi
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Handler: index.handler
       Layers:
@@ -2455,7 +2498,6 @@ Resources:
           SECRET_ARN: !Ref RDSSecret
           MODE: !Ref EdFiTenancyMode
           ENVLABEL: !Ref EnvLabel
-          PARTNER: !Ref Partner
           DOMAIN_NAME: !Ref DomainName
           TENANT_RESOURCE_TREE_ARN: !GetAtt 'TenantResourceTreeFunction.Arn'
           TENENT_MANAGEMENT_ARN: !GetAtt 'TenantManagementFunction.Arn'
@@ -2488,7 +2530,7 @@ Resources:
     - !Ref AdminAccountIds
     - 'SBEMetadataLambdaPermission${AccountId}':
         Type: 'AWS::Lambda::Permission'
-        Condition: UseAdminApi
+        Condition: UseAdminApiAndCrossAccountInvoke
         Properties:
           Action: 'lambda:InvokeFunction'
           FunctionName: !Ref 'SBEMetadataLambdaFunction'
@@ -2536,10 +2578,17 @@ Resources:
                 Action:
                   - dynamodb:Query
                 Resource: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants'
-  
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/${KmsKeyId}'
+
   TenantResourceTreeFunction:
     Condition: UseAdminApi
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Handler: index.handler
       Layers:
@@ -2579,7 +2628,7 @@ Resources:
     - !Ref AdminAccountIds
     - 'TenantResourceTreePermission${AccountId}':
         Type: 'AWS::Lambda::Permission'
-        Condition: UseAdminApi
+        Condition: UseAdminApiAndCrossAccountInvoke
         Properties:
           Action: 'lambda:InvokeFunction'
           FunctionName: !Ref 'TenantResourceTreeFunction'
@@ -2620,6 +2669,8 @@ Resources:
                 Resource: !Ref RDSSecret
   DataFreshnessFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Description: Will get Data Freshness JSON for SBAA
       Handler: index.lambda_handler
@@ -2756,6 +2807,7 @@ Resources:
     - !Ref AdminAccountIds
     - 'DataFreshnessPermission${AccountId}':
         Type: 'AWS::Lambda::Permission'
+        Condition: EnableCrossAccountInvoke
         Properties:
           Action: 'lambda:InvokeFunction'
           FunctionName: !Ref 'DataFreshnessFunction'
@@ -2796,14 +2848,16 @@ Resources:
                   - cloudwatch:PutMetricAlarm
                   - cloudwatch:DescribeAlarms
                   - cloudwatch:DeleteAlarms
-                Resource: '*'
+                Resource: !Sub 'arn:${AWS::Partition}:cloudwatch:us-east-1:${AWS::AccountId}:alarm:${EnvLabel}*'
   East1AlarmFunction:
     Condition: EnableHealthCheck
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
     Properties:
       Handler: index.lambda_handler
       Layers:
         - !Ref 'CRHelperLambdaLayer'
+      ReservedConcurrentExecutions: 1
       Description: Creates a Route53 Healthcheck Alarm in us-east-1
       FunctionName: !Sub '${EnvLabel}-East1Alarm'
       Role: !GetAtt 'East1AlarmRole.Arn'
@@ -2942,8 +2996,8 @@ Resources:
                   - kms:Decrypt
                   - ssm:GetParameter
                 Resource:
-                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
-                  - !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/*'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/*'
+                  - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*'
               - Effect: Allow
                 Action: ssm:DescribeParameters
                 Resource: '*'
@@ -2952,6 +3006,8 @@ Resources:
                 Resource: '*'
   ODSDerivativesLambdaFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Handler: index.lambda_handler
       Layers:
@@ -3198,6 +3254,8 @@ Resources:
                   - !Ref RDSSecret
   ODSUserPermissionsFunction:
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Runtime: python3.11
       Role: !GetAtt 'ODSUserPermissionsRole.Arn'
@@ -3225,6 +3283,7 @@ Resources:
           import os
           import boto3
           from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+          from psycopg2 import errors
 
           #The event_requirements object is used to return a useful error about the requirements of each action back to the user. This could also be expanded later for a 'Help' action or something like that.
           #If in the future an action is added/modified this object will need to be edited/updated. 
@@ -3317,6 +3376,7 @@ Resources:
               for db_name in db_list:
                   # Execute schema permissions in the database
                   conn_string = (f"host={host} dbname={db_name} port=5432 user={name} password={password}")
+                  print("performing update for " + db_name)
                   execute_query(conn_string, query)
                   
           def validate_name(name):
@@ -3386,6 +3446,8 @@ Resources:
                   conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
                   with conn.cursor() as cursor:
                       cursor.execute(query)
+              except errors.InvalidSchemaName as e:
+                  print(f"Schema does not exist. Skipping schema permissions.", e)
               except psycopg2.Error as e:
                   raise Exception("Error while attempting to change permissions.", e)
               finally:
@@ -3438,6 +3500,8 @@ Resources:
   ChangeVersionFunctionLambdaFunction:
     Condition: UsePublisher
     Type: AWS::Lambda::Function
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
     Properties:
       Handler: index.lambda_handler
       Layers:
@@ -3553,6 +3617,137 @@ Resources:
       logGroupName: !Sub '/aws/lambda/${ChangeVersionFunctionLambdaFunction}'
       retentionInDays: 365
 
+  QueryRunnerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${EnvLabel}-lambda-query-runner-policy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${S3BucketSourceCode}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${EnvLabel}-${Partner}-seed-data'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${S3BucketSourceCode}/*'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${EnvLabel}-${Partner}-seed-data/*'
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref RDSSecret
+  QueryRunnerLambdaFunction:
+    # checkov:skip=CKV_AWS_116:Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)
+    # checkov:skip=CKV_AWS_173:Check encryption settings for Lambda environment variable
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Layers:
+        - !Ref 'PsycopgLambdaLayer'
+      Description: Runs a query in a database
+      FunctionName: !Sub '${EnvLabel}-QueryRunner'
+      Role: !GetAtt 'QueryRunnerLambdaRole.Arn'
+      Runtime: python3.11
+      Timeout: 900
+      ReservedConcurrentExecutions: 1
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref 'LambdaRestoreSGID'
+        SubnetIds:
+          - !Ref 'PrivateSubnet1Id'
+          - !Ref 'PrivateSubnet2Id'
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref RDSSecret
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          import psycopg2
+          from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+
+          def lambda_handler(event, context):
+              # Get event input
+              query_s3_bucket = event.get('QueryS3Bucket')
+              query_s3_key = event.get('QueryS3Key')
+              database_name = event.get('DatabaseName')
+              print(database_name)
+              
+              # Get database connection details
+              secret_arn = os.environ['SECRET_ARN']
+              secrets_manager = boto3.client('secretsmanager')
+              secret_response = secrets_manager.get_secret_value(SecretId=secret_arn)
+              secret_values = json.loads(secret_response['SecretString'])
+              host = secret_values['host']
+              name = secret_values['username']
+              password = secret_values['password']
+              conn_string = (f"host={host} dbname={database_name} port=5432 user={name} password={password}")
+              
+              # Get query from S3
+              s3 = boto3.client("s3")
+              s3_response = s3.get_object(Bucket=query_s3_bucket, Key=query_s3_key)
+              query = s3_response['Body'].read().decode('utf-8')
+              
+              # Execute query
+              try:
+                  conn = psycopg2.connect(conn_string)
+                  conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                  with conn.cursor() as cursor:
+                      cursor.execute(query)
+                      result = cursor.statusmessage
+                      print(result)
+                  conn.close()
+                  status = "Success"
+              except Exception as e:
+                  # Add error message to S3 output
+                  status = "Error"
+                  error_message = f"Error while attempting to execute the query on database {database_name}: {e}\n"
+                  print(error_message)
+                  query_filename = query_s3_key.split("/")[-1]
+                  s3.put_object(
+                      Bucket=query_s3_bucket, 
+                      Key=f"logs/{query_filename}-{database_name}.txt", 
+                      Body=error_message,
+                      ContentType='text/plain')
+              finally:
+                if conn:
+                    conn.close()
+              return {
+                  "status": status,
+                  "body": database_name
+              }
+  QueryRunnerLambdaVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref 'QueryRunnerLambdaFunction'
+  QueryRunnerLambdaRetention:
+    DependsOn: SetCloudWatchRetentionVersion
+    Type: Custom::CloudWatchRetention
+    Properties:
+      ServiceToken: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
+      logGroupName: !Sub '/aws/lambda/${QueryRunnerLambdaFunction}'
+      retentionInDays: 365
+
 Outputs:
   DatabaseRestoreLambdaFunctionName:
     Description: Lambda Function Name to handle database restore operations.
@@ -3567,6 +3762,9 @@ Outputs:
   CRHelperLambdaLayer:
     Value: !Ref 'CRHelperLambdaLayer'
     Description: Reference to the Custom Resource Helper Lambda Layer
+  PsycopgLambdaLayer:
+    Value: !Ref 'PsycopgLambdaLayer'
+    Description: Reference to the Psycopg Lambda Layer
   SetCloudWatchRetentionFunctionArn:
     Value: !GetAtt 'SetCloudWatchRetentionLambdaFunction.Arn'
     Description: Arn of the fuction to set CloudWatch log group retention
@@ -3596,3 +3794,6 @@ Outputs:
     Condition: UsePublisher
     Description: Lambda ARN for ChangeVersion Function
     Value: !GetAtt 'ChangeVersionFunctionLambdaFunction.Arn'
+  QueryRunnerLambdaArn:
+    Description: Lambda ARN for Query Runner Function
+    Value: !GetAtt 'QueryRunnerLambdaFunction.Arn'

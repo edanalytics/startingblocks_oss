@@ -1,0 +1,35 @@
+name: CFN Lint
+
+on:
+  pull_request:
+    branches:
+      - '7.x'
+
+permissions: read-all
+
+jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps: 
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.head_ref }}
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v3
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install cfn-lint
+        pip install checkov
+    - name: CFN Lint Templates
+      run: |
+        cfn-lint $(git ls-files './templates/*.yml') --include-checks I
+    - name: Checkov
+      run: |
+        checkov --directory templates/ --quiet
