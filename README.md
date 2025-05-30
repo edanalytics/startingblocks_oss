@@ -1,5 +1,8 @@
 ![](https://admin.startingblocks.org/assets/starting-blocks-1ceab864.svg)
 
+>![IMPORTANT]
+>This branch is no longer maintained.  For updated StartingBlocks templates, please see the [7.x](https://github.com/edanalytics/startingblocks_oss/tree/7.x) branch.
+
 Welcome to the StartingBlocks Open Source repository! The artifacts in this repository will allow users to deploy a cloud native Ed-Fi ODS/API implementation using AWS resources. StartingBlocks is additionally inclusive of a suite of management functions that allow users to manage resources to configure their Ed-Fi deployment appropraitely for a variety of use cases.
 
 [Deployment Steps](./docs/sbe-deployment-steps.md)
