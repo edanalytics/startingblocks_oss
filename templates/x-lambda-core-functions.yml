@@ -92,6 +92,9 @@ Parameters:
   KmsKeyId:
     Description: The KMS Key ID used to encrypt resources in this deployment.
     Type: String
+  DeploySwagger:
+    Type: String
+    Description: If enabled, Swagger UI will be deployed to swagger-ui.{DomainName}
     
 Conditions:
   UseAdminApi: !Equals [!Ref 'AdminInterface', "Ed-Fi Admin API"]
@@ -728,6 +731,11 @@ Resources:
                   - kms:Decrypt
                 Resource:
                   - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/${KmsKeyId}'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:${EnvLabel}-SwaggerUpdate'
 
   TenantManagementFunction:
     Type: AWS::Lambda::Function
@@ -753,6 +761,7 @@ Resources:
         Variables:
           ENVLABEL: !Ref EnvLabel
           TENANCY_MODE: !Ref EdFiTenancyMode
+          DEPLOY_SWAGGER: !Ref 'DeploySwagger'
       Code:
         ZipFile: |
           import json
@@ -1055,7 +1064,13 @@ Resources:
               )
             
               return response['Command']['Status']
-            
+
+          def update_swagger(env_label):
+              lambda_client = boto3.client('lambda')
+              lambda_response = lambda_client.invoke(
+                  FunctionName=f'{env_label}-SwaggerUpdate',
+                  InvocationType='Event'
+              )
 
           def lambda_handler(event, context):
               conn = None
@@ -1069,6 +1084,7 @@ Resources:
                 
                   env_label = os.environ['ENVLABEL']
                   secret_name = env_label + '-AuroraMasterSecret'
+                  deploy_swagger = os.environ['DEPLOY_SWAGGER']
 
                   # Concatenate "-tenants" to env_label for the DynamoDB table name
                   table_name = env_label + '-tenants'
@@ -1110,6 +1126,10 @@ Resources:
                       # Add item to DynamoDB
                       response = add_item(table, tenant_name, allowed_ed_orgs)
 
+                      # Update Swagger if needed
+                      if deploy_swagger == 'True':
+                          update_swagger(env_label)
+
                       print("Item added successfully, and template databases cloned")
                       return "Item added successfully, and template databases cloned"
                   elif action == 'Remove':
@@ -1131,6 +1151,10 @@ Resources:
             
                           # Delete tenant-specific databases
                           delete_tenant_databases(conn, tenant_name)
+
+                          # Update Swagger if needed
+                          if deploy_swagger == 'True':
+                              update_swagger(env_label)
                           
                           print("Item removed successfully, and tenant-specific databases deleted")
                           return "Item removed successfully, and tenant-specific databases deleted"
