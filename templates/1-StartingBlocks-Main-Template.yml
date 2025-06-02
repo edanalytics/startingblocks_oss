@@ -530,6 +530,7 @@ Resources:
         SNSTopicArn: !Ref SNSTopicArn
         SlackWebhookUrl: !Ref SlackWebhookUrl
         KmsKeyId: !GetAtt 'SharedResourcesStack.Outputs.KeyId'
+        DeploySwagger: !Ref 'DeploySwagger'
         
   DatabaseStack:
     Type: AWS::CloudFormation::Stack
@@ -725,12 +726,16 @@ Resources:
         HostedZoneId: !Ref 'HostedZoneId'
         S3SourceBucket: !Ref 'S3SourceBucket'
         DomainName: !Ref 'DomainName'
-        SwaggerDefaultURL: !Sub 'https://swaggerui.${DomainName}/metadata/data/v3/resources/swagger.json'
+        SwaggerDefaultURL:  !If 
+          - UseDefaultWebApiZip
+          - !Sub 'https://api.ed-fi.org/v${EdFiApiVersion}/api/metadata/data/v3/resources/swagger.json'
+          - ''
         CRHelperLambdaLayer: !GetAtt 'LambdaCoreStack.Outputs.CRHelperLambdaLayer'
         Partner: !Ref 'Partner'
         LambdaDefaultSGID: !GetAtt 'SharedResourcesStack.Outputs.LambdaDefaultSGID'
         PrivateSubnet1Id: !Ref 'PrivateSubnet1Id'
         PrivateSubnet2Id: !Ref 'PrivateSubnet2Id'
+        KmsKeyId: !GetAtt 'SharedResourcesStack.Outputs.KeyId'
 
   StateMachineStack:
     Type: AWS::CloudFormation::Stack

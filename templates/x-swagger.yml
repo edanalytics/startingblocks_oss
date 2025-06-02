@@ -37,6 +37,9 @@ Parameters:
   PrivateSubnet2Id:
     Type: AWS::EC2::Subnet::Id
     Description: ID of the private subnet 2 in Availability Zone 2 (e.g., subnet-a0246dcd)
+  KmsKeyId:
+    Description: The KMS Key ID used to encrypt dynamodb.
+    Type: String
 Resources:
   S3SwaggerFEBucket:
     Type: AWS::S3::Bucket
@@ -388,6 +391,16 @@ Resources:
             Resource: 
               - !Sub 'arn:${AWS::Partition}:s3:::${S3SwaggerFEBucket}'
               - !Sub 'arn:${AWS::Partition}:s3:::${S3SwaggerFEBucket}/*'
+          - Effect: Allow
+            Action:
+              - dynamodb:Scan
+            Resource: 
+              - !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${EnvLabel}-tenants*'
+          - Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: 
+              - !Sub 'arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/${KmsKeyId}*'
       Roles:
         - !Ref 'SwaggerLambdaRole'
   SwaggerLambdaAWSCLILayer:
@@ -417,6 +430,7 @@ Resources:
         - !Ref SwaggerLambdaAWSCLILayer
         - !Ref 'CRHelperLambdaLayer'
       ReservedConcurrentExecutions: 1
+      FunctionName: !Sub '${EnvLabel}-SwaggerUpdate'
       Description: Updates and deploys Swagger UI in S3
       Handler: index.lambda_handler
       Environment:
@@ -424,6 +438,8 @@ Resources:
           S3_BUCKET: !Ref S3SwaggerFEBucket
           CF_DISTRIBUTION: !Ref CloudFront 
           DEFAULT_URL: !Ref SwaggerDefaultURL
+          DOMAIN_NAME: !Ref DomainName
+          ENV_LABEL: !Ref EnvLabel
       Runtime: python3.11
       MemorySize: 128
       Role: !GetAtt 'SwaggerLambdaRole.Arn'
@@ -444,11 +460,15 @@ Resources:
           import boto3
           from zipfile import ZipFile
           from crhelper import CfnResource
-          
+          from datetime import datetime
+
           helper = CfnResource()
 
           def lambda_handler(event, context):
-              helper(event, context)
+              if "StackId" in event:
+                  helper(event, context)
+              else:
+                  create(event, context)
 
           @helper.create
           @helper.update
@@ -457,7 +477,23 @@ Resources:
               the_bucket = os.environ['S3_BUCKET']
               cf_dist = os.environ['CF_DISTRIBUTION']
               swagger_url = os.environ['DEFAULT_URL']
+              domain_name = os.environ['DOMAIN_NAME']
+              env_label = os.environ['ENV_LABEL']
               http = urllib3.PoolManager()
+
+              # Check dynamodb for tenants and replace swagger_url if one exists
+              ddb_table_name = env_label + '-tenants'
+              ddb = boto3.resource('dynamodb')
+              ddb_table = ddb.Table(ddb_table_name)
+              ddb_response = ddb_table.scan()
+              ddb_data = ddb_response['Items']
+              # Handle pagination for large tables.
+              while ddb_response.get('LastEvaluatedKey'):
+                  ddb_response = ddb_table.scan(ExclusiveStartKey=ddb_response['LastEvaluatedKey'])
+                  ddb_data.extend(ddb_response['Items'])
+              if len(ddb_data) > 0:
+                  tenant = ddb_data[0]['Name']
+                  swagger_url = f'https://swaggerui.{domain_name}/{tenant}/metadata/data/v3/resources/swagger.json'
               print(swagger_url)
               
               url = 'https://github.com/swagger-api/swagger-ui/releases/latest'
@@ -513,7 +549,7 @@ Resources:
                               '/*',
                           ]
                       },
-                      'CallerReference': v
+                      'CallerReference': str(datetime.now())
                   }
               )
 
